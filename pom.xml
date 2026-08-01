@@ -6,7 +6,7 @@
 
     <groupId>io.github.j-util</groupId>
     <artifactId>columnar-projection-store-build</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.1-SNAPSHOT</version>
     <packaging>pom</packaging>
 
     <name>Columnar Projection Store Build</name>
@@ -18,7 +18,7 @@
     </modules>
 
     <properties>
-        <central.skipPublishing>false</central.skipPublishing>
+        <central.skipPublishing>true</central.skipPublishing>
     </properties>
 
     <build>
@@ -106,28 +106,28 @@
                                         <property name="bundle.output"
                                                   value="${project.build.directory}/central-publishing"/>
                                         <property name="core.bundle.directory"
-                                                  value="${bundle.staging}/io/github/j-util/columnar-projection-store/1.0.0"/>
+                                                  value="${bundle.staging}/io/github/j-util/columnar-projection-store/${project.version}"/>
                                         <property name="processor.bundle.directory"
-                                                  value="${bundle.staging}/io/github/j-util/columnar-projection-store-processor/1.0.0"/>
+                                                  value="${bundle.staging}/io/github/j-util/columnar-projection-store-processor/${project.version}"/>
                                         <delete dir="${bundle.staging}"/>
                                         <delete dir="${bundle.output}"/>
                                         <mkdir dir="${core.bundle.directory}"/>
                                         <mkdir dir="${processor.bundle.directory}"/>
                                         <mkdir dir="${bundle.output}"/>
                                         <copy file="${project.basedir}/columnar-projection-store/pom.xml"
-                                              tofile="${core.bundle.directory}/columnar-projection-store-1.0.0.pom"/>
+                                              tofile="${core.bundle.directory}/columnar-projection-store-${project.version}.pom"/>
                                         <copy todir="${core.bundle.directory}">
                                             <fileset dir="${project.basedir}/columnar-projection-store/target">
-                                                <include name="columnar-projection-store-1.0.0*.jar"/>
-                                                <include name="columnar-projection-store-1.0.0*.asc"/>
+                                                <include name="columnar-projection-store-${project.version}*.jar"/>
+                                                <include name="columnar-projection-store-${project.version}*.asc"/>
                                             </fileset>
                                         </copy>
                                         <copy file="${project.basedir}/columnar-projection-store-processor/pom.xml"
-                                              tofile="${processor.bundle.directory}/columnar-projection-store-processor-1.0.0.pom"/>
+                                              tofile="${processor.bundle.directory}/columnar-projection-store-processor-${project.version}.pom"/>
                                         <copy todir="${processor.bundle.directory}">
                                             <fileset dir="${project.basedir}/columnar-projection-store-processor/target">
-                                                <include name="columnar-projection-store-processor-1.0.0*.jar"/>
-                                                <include name="columnar-projection-store-processor-1.0.0*.asc"/>
+                                                <include name="columnar-projection-store-processor-${project.version}*.jar"/>
+                                                <include name="columnar-projection-store-processor-${project.version}*.asc"/>
                                             </fileset>
                                         </copy>
                                         <checksum algorithm="MD5" fileext=".md5">

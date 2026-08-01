@@ -164,7 +164,7 @@ projection must not be mutated concurrently while it is being read.
 
 While building, passing a `null` projection to `add` throws
 `NullPointerException`. Creating a store with a `null` projection type also
-throws `NullPointerException`; a negative `expectedSize`, a non-interface
+throws `NullPointerException`; a negative `expectedSize` or a non-interface
 projection type produces `IllegalArgumentException`. A missing generated
 implementation produces `IllegalStateException` whose message explains that
 the processor artifact must be configured on the annotation-processor path;
