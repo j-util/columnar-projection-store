@@ -13,21 +13,19 @@ and targets Java 8.
 
 ## Status and installation
 
-The current version is `0.1.0-SNAPSHOT`. It is unreleased and is not available
-from Maven Central. Before using the coordinate in another local project, run
-`./mvnw install` in this repository, or make the snapshot available through a
-snapshot repository configured by that project.
+Version `1.0.0` is the first functional release of Columnar Projection Store.
 
 The build produces two JARs. Runtime users depend only on
 `io.github.j-util:columnar-projection-store`; configure
 `io.github.j-util:columnar-projection-store-processor` only on the annotation
-processor path. This Maven 3 / Maven Compiler Plugin 3.x configuration makes
-that boundary and processor execution explicit:
+processor path. The processor is not required on the runtime classpath. This
+Maven 3 / Maven Compiler Plugin 3.x configuration makes that boundary and
+processor execution explicit:
 
 ```xml
 <properties>
     <maven.compiler.release>8</maven.compiler.release>
-    <columnar-projection-store.version>0.1.0-SNAPSHOT</columnar-projection-store.version>
+    <columnar-projection-store.version>1.0.0</columnar-projection-store.version>
 </properties>
 
 <dependencies>

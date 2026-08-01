@@ -6,7 +6,7 @@
 
     <groupId>io.github.j-util</groupId>
     <artifactId>columnar-projection-store-build</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <packaging>pom</packaging>
 
     <name>Columnar Projection Store Build</name>
@@ -17,8 +17,17 @@
         <module>columnar-projection-store-processor</module>
     </modules>
 
+    <properties>
+        <central.skipPublishing>false</central.skipPublishing>
+    </properties>
+
     <build>
         <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-clean-plugin</artifactId>
+                <version>3.5.0</version>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-install-plugin</artifactId>
@@ -45,4 +54,117 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.sonatype.central</groupId>
+                        <artifactId>central-publishing-maven-plugin</artifactId>
+                        <version>0.11.0</version>
+                        <extensions>true</extensions>
+                        <configuration>
+                            <publishingServerId>central</publishingServerId>
+                            <autoPublish>false</autoPublish>
+                            <skipPublishing>${central.skipPublishing}</skipPublishing>
+                            <checksums>all</checksums>
+                            <excludeArtifacts>
+                                <excludeArtifact>columnar-projection-store-build</excludeArtifact>
+                            </excludeArtifacts>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>local-central-bundle</id>
+            <activation>
+                <property>
+                    <name>central.skipPublishing</name>
+                    <value>true</value>
+                </property>
+            </activation>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <version>3.2.0</version>
+                        <executions>
+                            <execution>
+                                <id>create-local-central-bundle</id>
+                                <phase>deploy</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <property name="bundle.staging"
+                                                  value="${project.build.directory}/central-staging"/>
+                                        <property name="bundle.output"
+                                                  value="${project.build.directory}/central-publishing"/>
+                                        <property name="core.bundle.directory"
+                                                  value="${bundle.staging}/io/github/j-util/columnar-projection-store/1.0.0"/>
+                                        <property name="processor.bundle.directory"
+                                                  value="${bundle.staging}/io/github/j-util/columnar-projection-store-processor/1.0.0"/>
+                                        <delete dir="${bundle.staging}"/>
+                                        <delete dir="${bundle.output}"/>
+                                        <mkdir dir="${core.bundle.directory}"/>
+                                        <mkdir dir="${processor.bundle.directory}"/>
+                                        <mkdir dir="${bundle.output}"/>
+                                        <copy file="${project.basedir}/columnar-projection-store/pom.xml"
+                                              tofile="${core.bundle.directory}/columnar-projection-store-1.0.0.pom"/>
+                                        <copy todir="${core.bundle.directory}">
+                                            <fileset dir="${project.basedir}/columnar-projection-store/target">
+                                                <include name="columnar-projection-store-1.0.0*.jar"/>
+                                                <include name="columnar-projection-store-1.0.0*.asc"/>
+                                            </fileset>
+                                        </copy>
+                                        <copy file="${project.basedir}/columnar-projection-store-processor/pom.xml"
+                                              tofile="${processor.bundle.directory}/columnar-projection-store-processor-1.0.0.pom"/>
+                                        <copy todir="${processor.bundle.directory}">
+                                            <fileset dir="${project.basedir}/columnar-projection-store-processor/target">
+                                                <include name="columnar-projection-store-processor-1.0.0*.jar"/>
+                                                <include name="columnar-projection-store-processor-1.0.0*.asc"/>
+                                            </fileset>
+                                        </copy>
+                                        <checksum algorithm="MD5" fileext=".md5">
+                                            <fileset dir="${bundle.staging}">
+                                                <exclude name="**/*.asc"/>
+                                            </fileset>
+                                        </checksum>
+                                        <checksum algorithm="SHA-1" fileext=".sha1">
+                                            <fileset dir="${bundle.staging}">
+                                                <exclude name="**/*.asc"/>
+                                                <exclude name="**/*.md5"/>
+                                            </fileset>
+                                        </checksum>
+                                        <checksum algorithm="SHA-256" fileext=".sha256">
+                                            <fileset dir="${bundle.staging}">
+                                                <exclude name="**/*.asc"/>
+                                                <exclude name="**/*.md5"/>
+                                                <exclude name="**/*.sha1"/>
+                                            </fileset>
+                                        </checksum>
+                                        <checksum algorithm="SHA-512" fileext=".sha512">
+                                            <fileset dir="${bundle.staging}">
+                                                <exclude name="**/*.asc"/>
+                                                <exclude name="**/*.md5"/>
+                                                <exclude name="**/*.sha1"/>
+                                                <exclude name="**/*.sha256"/>
+                                            </fileset>
+                                        </checksum>
+                                        <zip destfile="${bundle.output}/central-bundle.zip"
+                                             basedir="${bundle.staging}"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

@@ -2,7 +2,11 @@
 
 This file records user-visible changes to Columnar Projection Store.
 
-## 0.1.0-SNAPSHOT (unreleased)
+## Unreleased
+
+## 1.0.0 - 2026-08-01
+
+The first functional release of Columnar Projection Store.
 
 ### Added
 
@@ -23,5 +27,3 @@ This file records user-visible changes to Columnar Projection Store.
   cursor per thread.
 - Java 8 compatibility, Maven Wrapper build verification, source artifacts,
   Javadocs, and Apache-2.0 licensing.
-
-This snapshot has not been published as a release.
