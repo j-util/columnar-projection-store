@@ -1,8 +1,8 @@
 # Columnar Projection Store
 
 Columnar Projection Store generates an append-only, in-memory columnar store
-for a Java interface. Annotate a projection schema, compile it with the bundled
-annotation processor, add source projections, seal the store, and then read
+for a Java interface. Annotate a projection schema, compile it with the
+separate annotation processor, add source projections, seal the store, and read
 rows through stable indexed views or allocation-conscious cursors.
 
 Primitive-valued columns use primitive arrays. Reference-valued columns keep
@@ -15,12 +15,14 @@ and targets Java 8.
 
 The current version is `0.1.0-SNAPSHOT`. It is unreleased and is not available
 from Maven Central. Before using the coordinate in another local project, run
-`mvn install` in this repository, or make the snapshot available through a
+`./mvnw install` in this repository, or make the snapshot available through a
 snapshot repository configured by that project.
 
-Add the artifact as both a normal dependency and an annotation-processor-path
-entry. This Maven 3 / Maven Compiler Plugin 3.x configuration makes processor
-execution explicit:
+The build produces two JARs. Runtime users depend only on
+`io.github.j-util:columnar-projection-store`; configure
+`io.github.j-util:columnar-projection-store-processor` only on the annotation
+processor path. This Maven 3 / Maven Compiler Plugin 3.x configuration makes
+that boundary and processor execution explicit:
 
 ```xml
 <properties>
@@ -46,7 +48,7 @@ execution explicit:
                 <annotationProcessorPaths>
                     <path>
                         <groupId>io.github.j-util</groupId>
-                        <artifactId>columnar-projection-store</artifactId>
+                        <artifactId>columnar-projection-store-processor</artifactId>
                         <version>${columnar-projection-store.version}</version>
                     </path>
                 </annotationProcessorPaths>
@@ -165,13 +167,12 @@ projection must not be mutated concurrently while it is being read.
 While building, passing a `null` projection to `add` throws
 `NullPointerException`. Creating a store with a `null` projection type also
 throws `NullPointerException`; a negative `expectedSize`, a non-interface
-projection type, or a missing generated implementation produces
-`IllegalArgumentException`. A missing implementation usually means the schema
-was not annotated or annotation processing was not enabled. A malformed
-generated class or a reflection failure during instantiation produces
-`IllegalStateException`. If a generated constructor itself throws a runtime
-exception or error, the factory propagates it unchanged; a checked constructor
-failure is wrapped in `IllegalStateException`.
+projection type produces `IllegalArgumentException`. A missing generated
+implementation produces `IllegalStateException` whose message explains that
+the processor artifact must be configured on the annotation-processor path;
+the original class-loading failure is retained as the cause. Malformed or
+incompatible generated code and any failure to instantiate it also produce
+`IllegalStateException` with the underlying cause where one is available.
 
 `viewAt(index)` returns a stable, read-only projection permanently bound to one
 row. It throws `IndexOutOfBoundsException` for an invalid index after the store
@@ -208,12 +209,14 @@ schema follows these rules:
 - Static methods are not columns. Default methods provide behavior and are not
   stored columns. Conflicting inherited abstract/default declarations or
   incompatible inherited return types are rejected.
+- The schema declares or inherits at least one effective abstract accessor.
+  Schemas with no methods or only default/static methods are rejected.
+- Abstract declarations that conflict with `java.lang.Object` methods, such as
+  `toString()`, `hashCode()`, or `equals(Object)`, are rejected as columns.
 
 The schema interface itself cannot declare type parameters. Fully parameterized
 generic parent interfaces are allowed; raw generic parents are rejected, and
-inherited accessors are resolved in the annotated schema's type context. A
-schema with no stored accessors is also valid and can still represent logical
-rows.
+inherited accessors are resolved in the annotated schema's type context.
 
 ## Complexity and storage
 
@@ -263,7 +266,7 @@ make mutable referenced objects immutable or thread-safe.
 Run the complete local quality gate from the repository root:
 
 ```shell
-mvn verify
+./mvnw clean verify
 ```
 
 The project is licensed under the [Apache License 2.0](LICENSE).

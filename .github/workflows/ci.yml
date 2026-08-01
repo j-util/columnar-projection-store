@@ -31,4 +31,4 @@ jobs:
           cache: maven
 
       - name: Verify
-        run: mvn --batch-mode --no-transfer-progress verify
+        run: ./mvnw --batch-mode --no-transfer-progress verify
