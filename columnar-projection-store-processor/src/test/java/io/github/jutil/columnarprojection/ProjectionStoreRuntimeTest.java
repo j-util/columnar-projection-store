@@ -109,6 +109,31 @@ class ProjectionStoreRuntimeTest {
     }
 
     @Test
+    void sealedEmptyStoreRemainsEmptyAcrossCursorOperations() {
+        ProjectionStore<IntProjection> store =
+                ProjectionStores.create(IntProjection.class, 0);
+
+        assertEquals(0, store.size());
+        store.seal();
+        store.seal();
+
+        ProjectionCursor<IntProjection> cursor = store.cursor();
+        assertThrows(IllegalStateException.class, cursor::current);
+        assertFalse(cursor.moveNext());
+        assertThrows(IllegalStateException.class, cursor::current);
+        assertFalse(cursor.moveNext());
+
+        cursor.rewind();
+        assertThrows(IllegalStateException.class, cursor::current);
+        assertFalse(cursor.moveNext());
+        assertFalse(cursor.moveNext());
+
+        assertEquals(0, store.size());
+        assertThrows(IndexOutOfBoundsException.class, () -> store.viewAt(-1));
+        assertThrows(IndexOutOfBoundsException.class, () -> store.viewAt(0));
+    }
+
+    @Test
     void usesTheExactInitialCapacityAndSettledGrowthSequence()
             throws Exception {
         ProjectionStore<IntProjection> store =
