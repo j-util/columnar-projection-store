@@ -1,5 +1,7 @@
 # Columnar Projection Store
 
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.j-util/columnar-projection-store.svg?label=Maven%20Central)](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
+
 Columnar Projection Store generates an append-only, in-memory columnar store
 for a Java interface. Annotate a projection schema, compile it with the
 separate annotation processor, add source projections, seal the store, and read
@@ -14,6 +16,10 @@ and targets Java 8.
 ## Status and installation
 
 Version `1.0.0` is the first functional release of Columnar Projection Store.
+Published on Maven Central:
+[runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
+and
+[annotation processor](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store-processor).
 
 The build produces two JARs. Runtime users depend only on
 `io.github.j-util:columnar-projection-store`; configure
