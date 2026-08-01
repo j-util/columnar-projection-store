@@ -190,8 +190,87 @@ final class ProjectionSchemaProcessorCompilationTest {
                 compilation, "example.SpecializedSchema");
         assertTrue(generated.contains("public java.lang.String value()"),
                 generated);
+        assertTrue(generated.contains(
+                "private java.lang.String[] column0;"), generated);
+        assertTrue(generated.contains(
+                "this.column0 = new java.lang.String[expectedSize];"),
+                generated);
+        assertTrue(generated.contains(
+                "final java.lang.String value0 = projection.value();"),
+                generated);
+        assertTrue(generated.contains("return column0[rowIndex];"), generated);
         assertFalse(generated.contains("public java.lang.Object value()"),
                 generated);
+        assertFalse(generated.contains(
+                "(java.lang.String) column0[rowIndex]"), generated);
+    }
+
+    @Test
+    void generatesColumnsUsingErasedAccessorTypes() throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.TypedColumnsSchema",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "final class Customer { }\n"
+                        + "@ProjectionSchema\n"
+                        + "public interface TypedColumnsSchema {\n"
+                        + "    int count();\n"
+                        + "    Customer customer();\n"
+                        + "    int[] ids();\n"
+                        + "    java.util.List<String> labels();\n"
+                        + "    java.util.Map<String, Integer> lookup();\n"
+                        + "    String name();\n"
+                        + "    String[] names();\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "example.TypedColumnsSchema");
+
+        assertTrue(generated.contains("private int[] column0;"), generated);
+        assertTrue(generated.contains(
+                "private example.Customer[] column1;"), generated);
+        assertTrue(generated.contains("private int[][] column2;"), generated);
+        assertTrue(generated.contains(
+                "private java.util.List[] column3;"), generated);
+        assertTrue(generated.contains(
+                "private java.util.Map[] column4;"), generated);
+        assertTrue(generated.contains(
+                "private java.lang.String[] column5;"), generated);
+        assertTrue(generated.contains(
+                "private java.lang.String[][] column6;"), generated);
+
+        assertTrue(generated.contains(
+                "this.column2 = new int[expectedSize][];"), generated);
+        assertTrue(generated.contains(
+                "this.column3 = new java.util.List[expectedSize];"),
+                generated);
+        assertTrue(generated.contains(
+                "this.column6 = new java.lang.String[expectedSize][];"),
+                generated);
+
+        assertTrue(generated.contains(
+                "final example.Customer value1 = projection.customer();"),
+                generated);
+        assertTrue(generated.contains(
+                "final java.util.List value3 = projection.labels();"),
+                generated);
+        assertTrue(generated.contains(
+                "final java.lang.String[] value6 = projection.names();"),
+                generated);
+        assertTrue(generated.contains(
+                "final java.util.List[] grownColumn3 = "
+                        + "java.util.Arrays.copyOf(column3, newCapacity);"),
+                generated);
+        assertTrue(generated.contains(
+                "final java.lang.String[][] grownColumn6 = "
+                        + "java.util.Arrays.copyOf(column6, newCapacity);"),
+                generated);
+        assertFalse(generated.contains(
+                "(java.lang.String) column5[rowIndex]"), generated);
+        assertFalse(generated.contains(
+                "(java.lang.String[]) column6[rowIndex]"), generated);
     }
 
     @Test

@@ -6,7 +6,7 @@
 
     <groupId>io.github.j-util</groupId>
     <artifactId>columnar-projection-store-processor</artifactId>
-    <version>1.0.1-SNAPSHOT</version>
+    <version>1.1.0</version>
 
     <name>Columnar Projection Store Processor</name>
     <description>Java annotation processor that generates in-memory columnar projection stores.</description>
@@ -36,7 +36,7 @@
         <connection>scm:git:https://github.com/j-util/columnar-projection-store.git</connection>
         <developerConnection>scm:git:ssh://git@github.com/j-util/columnar-projection-store.git</developerConnection>
         <url>https://github.com/j-util/columnar-projection-store</url>
-        <tag>HEAD</tag>
+        <tag>v1.1.0</tag>
     </scm>
 
     <properties>
@@ -51,7 +51,7 @@
         <dependency>
             <groupId>io.github.j-util</groupId>
             <artifactId>columnar-projection-store</artifactId>
-            <version>1.0.1-SNAPSHOT</version>
+            <version>1.1.0</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>

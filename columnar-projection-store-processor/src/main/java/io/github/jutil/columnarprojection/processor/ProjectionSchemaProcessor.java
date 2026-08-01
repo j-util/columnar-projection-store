@@ -359,7 +359,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             }
             accessors.add(new Accessor(
                     representative.element.getSimpleName().toString(),
-                    returnType,
+                    erasedReturnType,
                     sourceType(erasedReturnType)));
         }
 
@@ -562,9 +562,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        }");
         line(source, "        this.capacity = expectedSize;");
         for (int index = 0; index < accessors.size(); index++) {
-            line(source, "        this.column" + index + " = new "
-                    + columnComponentType(accessors.get(index))
-                    + "[expectedSize];");
+            line(source, "        this.column" + index + " = "
+                    + newColumnArray(accessors.get(index), "expectedSize")
+                    + ";");
         }
         line(source, "    }");
         line(source, "");
@@ -590,9 +590,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        }");
         for (int index = 0; index < accessors.size(); index++) {
             Accessor accessor = accessors.get(index);
-            String localType = accessor.returnType.getKind().isPrimitive()
-                    ? accessor.sourceReturnType : "java.lang.Object";
-            line(source, "        final " + localType + " value" + index
+            line(source, "        final " + accessor.sourceReturnType
+                    + " value" + index
                     + " = projection." + accessor.name + "();");
         }
         line(source, "        if (sealed) {");
@@ -692,12 +691,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "        @java.lang.Override");
             line(source, "        public " + accessor.sourceReturnType + " "
                     + accessor.name + "() {");
-            String valueExpression = "column" + index + "[rowIndex]";
-            if (!accessor.returnType.getKind().isPrimitive()) {
-                valueExpression = "(" + accessor.sourceReturnType + ") "
-                        + valueExpression;
-            }
-            line(source, "            return " + valueExpression + ";");
+            line(source, "            return column" + index
+                    + "[rowIndex];");
             line(source, "        }");
         }
         line(source, "    }");
@@ -750,10 +745,23 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private String columnComponentType(Accessor accessor) {
-        if (accessor.returnType.getKind().isPrimitive()) {
-            return accessor.sourceReturnType;
+        return accessor.sourceReturnType;
+    }
+
+    private String newColumnArray(Accessor accessor, String lengthExpression) {
+        TypeMirror baseType = accessor.erasedReturnType;
+        int trailingDimensions = 0;
+        while (baseType.getKind() == TypeKind.ARRAY) {
+            baseType = ((ArrayType) baseType).getComponentType();
+            trailingDimensions++;
         }
-        return "java.lang.Object";
+        StringBuilder expression = new StringBuilder();
+        expression.append("new ").append(sourceType(baseType))
+                .append('[').append(lengthExpression).append(']');
+        for (int dimension = 0; dimension < trailingDimensions; dimension++) {
+            expression.append("[]");
+        }
+        return expression.toString();
     }
 
     private String sourceType(TypeMirror type) {
@@ -786,15 +794,15 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static final class Accessor {
         private final String name;
-        private final TypeMirror returnType;
+        private final TypeMirror erasedReturnType;
         private final String sourceReturnType;
 
         private Accessor(
                 String name,
-                TypeMirror returnType,
+                TypeMirror erasedReturnType,
                 String sourceReturnType) {
             this.name = name;
-            this.returnType = returnType;
+            this.erasedReturnType = erasedReturnType;
             this.sourceReturnType = sourceReturnType;
         }
     }

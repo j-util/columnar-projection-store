@@ -4,6 +4,18 @@ This file records user-visible changes to Columnar Projection Store.
 
 ## Unreleased
 
+## 1.1.0 - 2026-08-01
+
+### Changed
+
+- Generated reference columns now use each accessor's erased return type rather
+  than widening every reference column to `Object[]`.
+- Generated add locals and projection getters preserve erased reference types,
+  eliminating unnecessary casts while retaining raw erased array types for
+  parameterized accessors.
+- Array-valued accessors now generate correctly dimensioned typed column
+  allocation and growth code.
+
 ## 1.0.0 - 2026-08-01
 
 The first functional release of Columnar Projection Store.

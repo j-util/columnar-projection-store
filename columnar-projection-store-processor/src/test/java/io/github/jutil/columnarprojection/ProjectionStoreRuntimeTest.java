@@ -11,7 +11,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -19,6 +21,56 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 
 class ProjectionStoreRuntimeTest {
+
+    @Test
+    void storesTypedReferenceAndArrayColumnsWithoutCopyingValues() {
+        ProjectionStore<TypedReferenceProjection> store =
+                ProjectionStores.create(TypedReferenceProjection.class, 0);
+        MutableTypedReferences source = new MutableTypedReferences();
+        RuntimeCustomer customer = new RuntimeCustomer("customer-1");
+        List<String> labels = new ArrayList<String>();
+        labels.add("initial");
+        Map<String, Integer> lookup =
+                new LinkedHashMap<String, Integer>();
+        lookup.put("initial", Integer.valueOf(1));
+        int[] ids = new int[] {1, 2};
+        String[] names = new String[] {"first"};
+        source.customer = customer;
+        source.ids = ids;
+        source.labels = labels;
+        source.lookup = lookup;
+        source.name = "typed";
+        source.names = names;
+
+        store.add(source);
+        labels.add("retained");
+        lookup.put("retained", Integer.valueOf(2));
+        ids[1] = 22;
+        names[0] = "retained";
+        store.add(new MutableTypedReferences());
+        store.seal();
+
+        TypedReferenceProjection first = store.viewAt(0);
+        assertSame(customer, first.customer());
+        assertSame(ids, first.ids());
+        assertSame(labels, first.labels());
+        assertSame(lookup, first.lookup());
+        assertEquals("typed", first.name());
+        assertSame(names, first.names());
+        assertEquals(22, first.ids()[1]);
+        assertEquals("retained", first.names()[0]);
+
+        ProjectionCursor<TypedReferenceProjection> cursor = store.cursor();
+        assertTrue(cursor.moveNext());
+        assertSame(customer, cursor.current().customer());
+        assertTrue(cursor.moveNext());
+        assertNull(cursor.current().customer());
+        assertNull(cursor.current().ids());
+        assertNull(cursor.current().labels());
+        assertNull(cursor.current().lookup());
+        assertNull(cursor.current().name());
+        assertNull(cursor.current().names());
+    }
 
     @Test
     void storesEveryPrimitiveAndOpaqueReferenceValue() {
@@ -502,6 +554,46 @@ class ProjectionStoreRuntimeTest {
         }
     }
 
+    private static final class MutableTypedReferences
+            implements TypedReferenceProjection {
+        private RuntimeCustomer customer;
+        private int[] ids;
+        private List<String> labels;
+        private Map<String, Integer> lookup;
+        private String name;
+        private String[] names;
+
+        @Override
+        public RuntimeCustomer customer() {
+            return customer;
+        }
+
+        @Override
+        public int[] ids() {
+            return ids;
+        }
+
+        @Override
+        public List<String> labels() {
+            return labels;
+        }
+
+        @Override
+        public Map<String, Integer> lookup() {
+            return lookup;
+        }
+
+        @Override
+        public String name() {
+            return name;
+        }
+
+        @Override
+        public String[] names() {
+            return names;
+        }
+    }
+
     private static final class CountingRow implements CountingProjection {
         private int firstCalls;
         private int secondCalls;
@@ -584,6 +676,33 @@ interface AllValuesProjection {
     int[] primitiveArrayValue();
 
     String[] referenceArrayValue();
+}
+
+@ProjectionSchema
+interface TypedReferenceProjection {
+    RuntimeCustomer customer();
+
+    int[] ids();
+
+    List<String> labels();
+
+    Map<String, Integer> lookup();
+
+    String name();
+
+    String[] names();
+}
+
+final class RuntimeCustomer {
+    private final String identifier;
+
+    RuntimeCustomer(String identifier) {
+        this.identifier = identifier;
+    }
+
+    String identifier() {
+        return identifier;
+    }
 }
 
 @ProjectionSchema

@@ -7,16 +7,18 @@ for a Java interface. Annotate a projection schema, compile it with the
 separate annotation processor, add source projections, seal the store, and read
 rows through stable indexed views or allocation-conscious cursors.
 
-Primitive-valued columns use primitive arrays. Reference-valued columns keep
-opaque references, including `null`; referenced objects are not copied or
-flattened. The application-facing API is in
+Primitive-valued columns use primitive arrays. Reference-valued columns use
+arrays of the accessors' erased return types and keep references, including
+`null`; referenced objects are not copied or flattened. The application-facing
+API is in
 `io.github.jutil.columnarprojection`. The library has no runtime dependencies
 and targets Java 8.
 
 ## Status and installation
 
-Version `1.0.0` is the first functional release of Columnar Projection Store.
-Published on Maven Central:
+Version `1.1.0` improves the static typing of generated reference columns while
+preserving the public API and storage semantics introduced in `1.0.0`.
+Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
 and
 [annotation processor](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store-processor).
@@ -31,7 +33,7 @@ processor execution explicit:
 ```xml
 <properties>
     <maven.compiler.release>8</maven.compiler.release>
-    <columnar-projection-store.version>1.0.0</columnar-projection-store.version>
+    <columnar-projection-store.version>1.1.0</columnar-projection-store.version>
 </properties>
 
 <dependencies>
