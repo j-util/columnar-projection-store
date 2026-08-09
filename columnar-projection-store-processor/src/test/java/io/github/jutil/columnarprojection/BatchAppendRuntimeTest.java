@@ -39,11 +39,16 @@ class BatchAppendRuntimeTest {
         Method batch = storeType.getMethod("batch", Integer.TYPE);
         assertSame(batchType, batch.getReturnType());
         assertSame(batchType, batchType.getMethod(
-                "quantity", int[].class, Integer.TYPE).getReturnType());
+                "quantity", int[].class).getReturnType());
         assertSame(batchType, batchType.getMethod(
-                "symbol", String[].class, Integer.TYPE).getReturnType());
+                "symbol", String[].class).getReturnType());
         assertSame(batchType, batchType.getMethod(
-                "payload", byte[][].class, Integer.TYPE).getReturnType());
+                "payload", byte[][].class).getReturnType());
+        assertThrows(NoSuchMethodException.class, () -> batchType.getMethod(
+                "quantity", int[].class, Integer.TYPE));
+        for (Field field : batchType.getDeclaredFields()) {
+            assertFalse(field.getName().contains("sourceOffset"));
+        }
         assertSame(Void.TYPE, batchType.getMethod("append").getReturnType());
 
         boolean genericInterfaceHasBatch = false;
@@ -54,7 +59,7 @@ class BatchAppendRuntimeTest {
     }
 
     @Test
-    void appendsEveryPrimitiveAndReferenceCategoryWithIndependentOffsets() {
+    void appendsEveryPrimitiveAndReferenceCategoryAndIgnoresTrailingValues() {
         AllValuesProjection__ColumnarProjectionStore store =
                 new AllValuesProjection__ColumnarProjectionStore(0);
         Object firstObject = new Object();
@@ -62,20 +67,24 @@ class BatchAppendRuntimeTest {
         String[] firstReferenceArray = new String[] {"nested", null};
 
         store.batch(2)
-                .booleanValue(new boolean[] {true, false}, 0)
-                .byteValue(new byte[] {99, 3, 4}, 1)
-                .shortValue(new short[] {98, 97, 5, 6}, 2)
-                .intValue(new int[] {96, 7, 8}, 1)
-                .longValue(new long[] {9L, 10L}, 0)
-                .charValue(new char[] {'x', 'y', 'a', 'b'}, 2)
-                .floatValue(new float[] {95.0F, 1.5F, 2.5F}, 1)
-                .doubleValue(new double[] {3.5D, 4.5D}, 0)
-                .textValue(new String[] {"ignored", "also", null, "text"}, 2)
-                .objectValue(new Object[] {"ignored", firstObject, null}, 1)
+                .booleanValue(new boolean[] {true, false, true})
+                .byteValue(new byte[] {3, 4, 99})
+                .shortValue(new short[] {5, 6, 98})
+                .intValue(new int[] {7, 8, 97})
+                .longValue(new long[] {9L, 10L, 96L})
+                .charValue(new char[] {'a', 'b', 'x'})
+                .floatValue(new float[] {1.5F, 2.5F, 95.0F})
+                .doubleValue(new double[] {3.5D, 4.5D, 94.0D})
+                .textValue(new String[] {null, "text", "ignored"})
+                .objectValue(new Object[] {firstObject, null, "ignored"})
                 .primitiveArrayValue(
-                        new int[][] {null, firstPrimitiveArray, null}, 1)
+                        new int[][] {
+                            firstPrimitiveArray, null, new int[] {99}
+                        })
                 .referenceArrayValue(
-                        new String[][] {firstReferenceArray, null}, 0)
+                        new String[][] {
+                            firstReferenceArray, null, new String[] {"ignored"}
+                        })
                 .append();
 
         assertEquals(2, store.size());
@@ -119,9 +128,9 @@ class BatchAppendRuntimeTest {
         byte[] secondPayload = new byte[] {2};
 
         store.batch(2)
-                .quantity(new int[] {11, 22}, 0)
-                .symbol(new String[] {"first", "second"}, 0)
-                .payload(new byte[][] {firstPayload, secondPayload}, 0)
+                .quantity(new int[] {11, 22})
+                .symbol(new String[] {"first", "second"})
+                .payload(new byte[][] {firstPayload, secondPayload})
                 .append();
 
         assertEquals(2, store.size());
@@ -141,15 +150,15 @@ class BatchAppendRuntimeTest {
         byte[] addedPayload = new byte[] {4};
 
         BatchProjection__ColumnarProjectionStore.Batch early = store.batch(1)
-                .quantity(new int[] {40}, 0)
-                .symbol(new String[] {"early"}, 0)
-                .payload(new byte[][] {earlyPayload}, 0);
+                .quantity(new int[] {40})
+                .symbol(new String[] {"early"})
+                .payload(new byte[][] {earlyPayload});
         BatchProjection__ColumnarProjectionStore.Batch later = store.batch(2)
-                .quantity(new int[] {20, 30}, 0)
-                .symbol(new String[] {"later-1", "later-2"}, 0)
+                .quantity(new int[] {20, 30})
+                .symbol(new String[] {"later-1", "later-2"})
                 .payload(new byte[][] {
                     laterFirstPayload, laterSecondPayload
-                }, 0);
+                });
 
         later.append();
         store.add(batchProjection(35, "added", addedPayload));
@@ -174,9 +183,9 @@ class BatchAppendRuntimeTest {
         byte[] replacementPayload = new byte[] {2};
         byte[][] payloads = new byte[][] {originalPayload, null};
         BatchProjection__ColumnarProjectionStore.Batch batch = store.batch(2)
-                .quantity(quantities, 0)
-                .symbol(symbols, 0)
-                .payload(payloads, 0);
+                .quantity(quantities)
+                .symbol(symbols)
+                .payload(payloads);
 
         quantities[0] = 10;
         symbols[0] = "before-append";
@@ -204,7 +213,7 @@ class BatchAppendRuntimeTest {
     }
 
     @Test
-    void zeroRowsNeedNoColumnsAndAllowOffsetsAtArrayEnds() {
+    void zeroRowsNeedNoColumnsAndAcceptEmptyOrNonEmptyArrays() {
         BatchProjection__ColumnarProjectionStore store =
                 new BatchProjection__ColumnarProjectionStore(0);
 
@@ -215,9 +224,14 @@ class BatchAppendRuntimeTest {
         assertThrows(IllegalStateException.class, empty::append);
 
         store.batch(0)
-                .quantity(new int[] {1}, 1)
-                .symbol(new String[] {"one"}, 1)
-                .payload(new byte[][] {new byte[] {1}}, 1)
+                .quantity(new int[0])
+                .symbol(new String[0])
+                .payload(new byte[0][])
+                .append();
+        store.batch(0)
+                .quantity(new int[] {1})
+                .symbol(new String[] {"one"})
+                .payload(new byte[][] {new byte[] {1}})
                 .append();
 
         assertEquals(0, store.size());
@@ -231,21 +245,17 @@ class BatchAppendRuntimeTest {
         BatchProjection__ColumnarProjectionStore.Batch batch = store.batch(2);
 
         assertThrows(NullPointerException.class,
-                () -> batch.quantity(null, 0));
+                () -> batch.quantity(null));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> batch.quantity(new int[] {1, 2}, -1));
+                () -> batch.quantity(new int[0]));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> batch.quantity(new int[] {1, 2}, 1));
-        assertThrows(IndexOutOfBoundsException.class,
-                () -> batch.quantity(new int[] {1, 2}, 2));
-        assertThrows(IndexOutOfBoundsException.class,
-                () -> batch.quantity(new int[] {1, 2}, Integer.MAX_VALUE));
-        batch.quantity(new int[] {3, 4}, 0);
+                () -> batch.quantity(new int[] {1}));
+        batch.quantity(new int[] {3, 4});
 
         assertThrows(NullPointerException.class,
-                () -> batch.symbol(null, 0));
-        batch.symbol(new String[] {"three", "four"}, 0);
-        batch.payload(new byte[][] {new byte[] {3}, new byte[] {4}}, 0);
+                () -> batch.symbol(null));
+        batch.symbol(new String[] {"three", "four"});
+        batch.payload(new byte[][] {new byte[] {3}, new byte[] {4}});
         batch.append();
 
         assertEquals(2, store.size());
@@ -258,23 +268,23 @@ class BatchAppendRuntimeTest {
         int[] quantities = new int[] {7};
         BatchProjection__ColumnarProjectionStore.Batch batch = store.batch(1);
 
-        assertSame(batch, batch.quantity(quantities, 0));
+        assertSame(batch, batch.quantity(quantities));
         assertThrows(IllegalStateException.class,
-                () -> batch.quantity(new int[] {8}, 0));
+                () -> batch.quantity(new int[] {8}));
         assertThrows(IllegalStateException.class, batch::append);
         assertEquals(0, store.size());
 
-        batch.symbol(new String[] {"seven"}, 0);
+        batch.symbol(new String[] {"seven"});
         assertThrows(IllegalStateException.class, batch::append);
         assertEquals(0, store.size());
 
         byte[] payload = new byte[] {7};
-        batch.payload(new byte[][] {payload}, 0);
+        batch.payload(new byte[][] {payload});
         batch.append();
 
         assertEquals(1, store.size());
         assertThrows(IllegalStateException.class,
-                () -> batch.symbol(new String[] {"again"}, 0));
+                () -> batch.symbol(new String[] {"again"}));
         assertThrows(IllegalStateException.class, batch::append);
         store.seal();
         assertBatchRow(store.viewAt(0), 7, "seven", payload);
@@ -289,16 +299,16 @@ class BatchAppendRuntimeTest {
         BatchProjection__ColumnarProjectionStore.Batch batch = store.batch(2);
 
         assertThrows(IndexOutOfBoundsException.class,
-                () -> batch.quantity(new int[] {6}, 0));
+                () -> batch.quantity(new int[] {6}));
         assertEquals(1, store.size());
         assertThrows(IllegalStateException.class, batch::append);
         assertEquals(1, store.size());
 
-        batch.quantity(new int[] {6, 7}, 0)
-                .symbol(new String[] {"six", "seven"}, 0)
+        batch.quantity(new int[] {6, 7})
+                .symbol(new String[] {"six", "seven"})
                 .payload(new byte[][] {
                     new byte[] {6}, new byte[] {7}
-                }, 0)
+                })
                 .append();
 
         assertEquals(3, store.size());
@@ -316,9 +326,9 @@ class BatchAppendRuntimeTest {
         byte[] existingPayload = new byte[] {1};
         store.add(batchProjection(1, "existing", existingPayload));
         BatchProjection__ColumnarProjectionStore.Batch batch = store.batch(1)
-                .quantity(new int[] {2}, 0)
-                .symbol(new String[] {"not-copied"}, 0)
-                .payload(new byte[][] {new byte[] {2}}, 0);
+                .quantity(new int[] {2})
+                .symbol(new String[] {"not-copied"})
+                .payload(new byte[][] {new byte[] {2}});
 
         store.seal();
 
@@ -372,8 +382,7 @@ class BatchAppendRuntimeTest {
             throws Exception {
         int sourceCount = 0;
         for (Field field : batch.getClass().getDeclaredFields()) {
-            if (field.getName().startsWith("source")
-                    && !field.getType().equals(Integer.TYPE)) {
+            if (field.getName().startsWith("source")) {
                 field.setAccessible(true);
                 assertNull(field.get(batch), field.getName());
                 sourceCount++;

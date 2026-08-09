@@ -583,7 +583,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "}.");
         line(source, " *");
         line(source, " * <p>Rows may be added individually or appended from "
-                + "typed column slices while the store is in its building "
+                + "typed column arrays while the store is in its building "
                 + "state.");
         line(source, " * Building and batch mutation are not thread-safe. "
                 + "After sealing and safe publication, reads follow the "
@@ -663,7 +663,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "     * <p>The returned batch retains each supplied "
                 + "source array until its {@link " + batchTypeName
                 + "#append()} method "
-                + "successfully copies the selected slices.");
+                + "successfully copies the first {@code rowCount} elements.");
         line(source, "     * Batch mutation is not thread-safe.");
         line(source, "     *");
         line(source, "     * @param rowCount the number of values to copy from "
@@ -806,7 +806,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             String batchTypeName) {
         line(source, "    /**");
         line(source, "     * A one-use, store-specific batch of typed column "
-                + "slices.");
+                + "arrays.");
         line(source, "     *");
         line(source, "     * <p>For a positive row count, every column must be "
                 + "supplied exactly once. Source arrays are retained until a "
@@ -817,9 +817,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "Reference-valued elements are copied as references.");
         line(source, "     *");
         line(source, "     * <p>Validation failures leave logical store rows "
-                + "unchanged. A missing or invalid column may be corrected "
-                + "before retrying. A successful append consumes this batch, "
-                + "releases its source-array references, and places its rows "
+                + "unchanged. A missing column or too-short source array may "
+                + "be corrected before retrying. A successful append consumes "
+                + "this batch, releases its source-array references, and "
+                + "places its rows "
                 + "at the store size at execution time. Batch mutation is not "
                 + "thread-safe.");
         line(source, "     */");
@@ -830,7 +831,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "        private "
                     + batchSourceColumnType(accessors.get(index))
                     + " source" + index + ";");
-            line(source, "        private int sourceOffset" + index + ";");
             line(source, "        private boolean assigned" + index + ";");
         }
         line(source, "");
@@ -893,7 +893,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "            if (rowCount != 0) {");
         for (int index = 0; index < accessors.size(); index++) {
             line(source, "                java.lang.System.arraycopy(source"
-                    + index + ", sourceOffset" + index + ", column" + index
+                    + index + ", 0, column" + index
                     + ", destinationOffset, rowCount);");
         }
         line(source, "            }");
@@ -922,19 +922,21 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "");
         line(source, "        /**");
         line(source, "         * Supplies the {@code " + accessor.name
-                + "} column from a source-array slice.");
+                + "} column from a source array.");
         line(source, "         *");
-        line(source, "         * <p>The source array is retained until "
-                + "{@link #append()} and is never modified.");
+        line(source, "         * <p>The source array must contain at least "
+                + "{@code rowCount} elements. The first {@code rowCount} "
+                + "elements are copied when {@link #append()} executes; "
+                + "trailing elements are ignored. The source array is "
+                + "retained until then and is never modified.");
         line(source, "         *");
         line(source, "         * @param source the source column array");
-        line(source, "         * @param sourceOffset the first source index to "
-                + "copy");
         line(source, "         * @return this batch");
         line(source, "         * @throws java.lang.NullPointerException if "
                 + "{@code source} is null");
         line(source, "         * @throws java.lang.IndexOutOfBoundsException "
-                + "if the selected slice is outside {@code source}");
+                + "if {@code source} has fewer than {@code rowCount} "
+                + "elements");
         line(source, "         * @throws java.lang.IllegalStateException if "
                 + "this column was already supplied or this batch was "
                 + "successfully appended");
@@ -942,7 +944,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        public " + batchTypeName + " "
                 + accessor.name + "("
                 + batchSourceColumnType(accessor)
-                + " source, int sourceOffset) {");
+                + " source) {");
         line(source, "            requireUnconsumed();");
         line(source, "            if (assigned" + index + ") {");
         line(source, "                throw new java.lang.IllegalStateException("
@@ -953,19 +955,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "                throw new java.lang.NullPointerException("
                 + "\"source\");");
         line(source, "            }");
-        line(source, "            if (sourceOffset < 0");
-        line(source, "                    || rowCount > source.length "
-                + "- sourceOffset) {");
+        line(source, "            if (source.length < rowCount) {");
         line(source, "                throw new java.lang."
                 + "IndexOutOfBoundsException(");
-        line(source, "                        \"sourceOffset: \" + "
-                + "sourceOffset");
-        line(source, "                        + \", rowCount: \" + rowCount");
+        line(source, "                        \"rowCount: \" + rowCount");
         line(source, "                        + \", source length: \" + "
                 + "source.length);");
         line(source, "            }");
         line(source, "            source" + index + " = source;");
-        line(source, "            sourceOffset" + index + " = sourceOffset;");
         line(source, "            assigned" + index + " = true;");
         line(source, "            return this;");
         line(source, "        }");
@@ -1071,11 +1068,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private String sourceType(TypeMirror type) {
         StringBuilder source = new StringBuilder();
-        appendSourceType(source, type);
+        appendSourceType(source, type, null);
         return source.toString();
     }
 
-    private void appendSourceType(StringBuilder source, TypeMirror type) {
+    private void appendSourceType(
+            StringBuilder source,
+            TypeMirror type,
+            Set<String> leadingIdentifiers) {
         switch (type.getKind()) {
             case BOOLEAN:
                 source.append("boolean");
@@ -1106,15 +1106,23 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 return;
             case ARRAY:
                 appendSourceType(
-                        source, ((ArrayType) type).getComponentType());
+                        source,
+                        ((ArrayType) type).getComponentType(),
+                        leadingIdentifiers);
                 source.append("[]");
                 return;
             case WILDCARD:
-                appendWildcardSourceType(source, (WildcardType) type);
+                appendWildcardSourceType(
+                        source,
+                        (WildcardType) type,
+                        leadingIdentifiers);
                 return;
             case DECLARED:
             case ERROR:
-                appendDeclaredSourceType(source, (DeclaredType) type);
+                appendDeclaredSourceType(
+                        source,
+                        (DeclaredType) type,
+                        leadingIdentifiers);
                 return;
             default:
                 throw new IllegalArgumentException(
@@ -1123,25 +1131,39 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private void appendWildcardSourceType(
-            StringBuilder source, WildcardType wildcard) {
+            StringBuilder source,
+            WildcardType wildcard,
+            Set<String> leadingIdentifiers) {
         source.append('?');
         if (wildcard.getExtendsBound() != null) {
             source.append(" extends ");
-            appendSourceType(source, wildcard.getExtendsBound());
+            appendSourceType(
+                    source,
+                    wildcard.getExtendsBound(),
+                    leadingIdentifiers);
         } else if (wildcard.getSuperBound() != null) {
             source.append(" super ");
-            appendSourceType(source, wildcard.getSuperBound());
+            appendSourceType(
+                    source,
+                    wildcard.getSuperBound(),
+                    leadingIdentifiers);
         }
     }
 
     private void appendDeclaredSourceType(
-            StringBuilder source, DeclaredType declaredType) {
+            StringBuilder source,
+            DeclaredType declaredType,
+            Set<String> leadingIdentifiers) {
         TypeElement typeElement = (TypeElement) declaredType.asElement();
         TypeMirror enclosingType = declaredType.getEnclosingType();
         if (enclosingType.getKind() == TypeKind.NONE) {
-            source.append(typeElement.getQualifiedName());
+            String qualifiedName = typeElement.getQualifiedName().toString();
+            source.append(qualifiedName);
+            if (leadingIdentifiers != null) {
+                addLeadingIdentifier(qualifiedName, leadingIdentifiers);
+            }
         } else {
-            appendSourceType(source, enclosingType);
+            appendSourceType(source, enclosingType, leadingIdentifiers);
             source.append('.').append(typeElement.getSimpleName());
         }
 
@@ -1152,7 +1174,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 if (index != 0) {
                     source.append(", ");
                 }
-                appendSourceType(source, arguments.get(index));
+                appendSourceType(
+                        source,
+                        arguments.get(index),
+                        leadingIdentifiers);
             }
             source.append('>');
         }
@@ -1161,12 +1186,13 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     private String batchTypeName(
             TypeElement schema, List<Accessor> accessors) {
         Set<String> unavailableNames = new LinkedHashSet<String>();
-        addUnnamedTopLevelTypeName(schema, unavailableNames);
+        addLeadingIdentifier(
+                schema.getQualifiedName().toString(), unavailableNames);
         for (Accessor accessor : accessors) {
-            collectUnnamedTopLevelTypeNames(
+            collectSourceTypeLeadingIdentifiers(
                     accessor.erasedReturnType, unavailableNames);
             if (accessor.declaredReturnTypeNameable) {
-                collectUnnamedTopLevelTypeNames(
+                collectSourceTypeLeadingIdentifiers(
                         accessor.declaredReturnType, unavailableNames);
             }
         }
@@ -1178,51 +1204,26 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         return name;
     }
 
-    private void collectUnnamedTopLevelTypeNames(
+    private void collectSourceTypeLeadingIdentifiers(
             TypeMirror type, Set<String> names) {
-        if (type.getKind() == TypeKind.ARRAY) {
-            collectUnnamedTopLevelTypeNames(
-                    ((ArrayType) type).getComponentType(), names);
-            return;
-        }
-        if (type.getKind() == TypeKind.WILDCARD) {
-            WildcardType wildcard = (WildcardType) type;
-            if (wildcard.getExtendsBound() != null) {
-                collectUnnamedTopLevelTypeNames(
-                        wildcard.getExtendsBound(), names);
-            }
-            if (wildcard.getSuperBound() != null) {
-                collectUnnamedTopLevelTypeNames(
-                        wildcard.getSuperBound(), names);
-            }
-            return;
-        }
-        if (type.getKind() != TypeKind.DECLARED
-                && type.getKind() != TypeKind.ERROR) {
-            return;
-        }
-
-        DeclaredType declaredType = (DeclaredType) type;
-        TypeMirror enclosingType = declaredType.getEnclosingType();
-        if (enclosingType.getKind() != TypeKind.NONE) {
-            collectUnnamedTopLevelTypeNames(enclosingType, names);
-        }
-        addUnnamedTopLevelTypeName(
-                (TypeElement) declaredType.asElement(), names);
-        for (TypeMirror argument : declaredType.getTypeArguments()) {
-            collectUnnamedTopLevelTypeNames(argument, names);
-        }
+        appendSourceType(new StringBuilder(), type, names);
     }
 
-    private void addUnnamedTopLevelTypeName(
-            TypeElement type, Set<String> names) {
-        Element topLevel = type;
-        while (topLevel.getEnclosingElement() instanceof TypeElement) {
-            topLevel = topLevel.getEnclosingElement();
+    private void addLeadingIdentifier(
+            String sourceReference, Set<String> names) {
+        int length = sourceReference.length();
+        if (length == 0
+                || !Character.isJavaIdentifierStart(
+                        sourceReference.charAt(0))) {
+            return;
         }
-        if (elements.getPackageOf(topLevel).isUnnamed()) {
-            names.add(topLevel.getSimpleName().toString());
+        int end = 1;
+        while (end < length
+                && Character.isJavaIdentifierPart(
+                        sourceReference.charAt(end))) {
+            end++;
         }
+        names.add(sourceReference.substring(0, end));
     }
 
     private void error(Element element, String message) {

@@ -17,8 +17,8 @@ unsupported. The library has no runtime dependencies and targets Java 8.
 
 ## Status and installation
 
-Version `1.2.0` adds a generated, type-safe batch API for appending column-array
-slices while preserving the row-oriented API and storage semantics introduced
+Version `1.2.0` adds a generated, type-safe batch API for appending column
+arrays while preserving the row-oriented API and storage semantics introduced
 in `1.0.0`.
 Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
@@ -164,16 +164,18 @@ PriceProjection__ColumnarProjectionStore store =
         new PriceProjection__ColumnarProjectionStore(expectedSize);
 
 store.batch(rowCount)
-        .timestamp(timestamps, timestampOffset)
-        .symbol(symbols, symbolOffset)
-        .lastTradePrice(prices, priceOffset)
+        .timestamp(timestamps)
+        .symbol(symbols)
+        .lastTradePrice(prices)
         .append();
 ```
 
 The returned nested type is ordinarily named `Batch`. If that name would
-shadow a required type from an unnamed-package schema, the processor chooses a
-deterministic collision-safe name by appending underscores. Chained use through
-`batch(...)`, as above, does not require callers to spell the nested type name.
+shadow the first identifier of a type reference required by generated source,
+the processor chooses a deterministic collision-safe name by appending
+underscores. This covers named-package roots and unnamed-package top-level
+types. Chained use through `batch(...)`, as above, does not require callers to
+spell the nested type name.
 
 For a parameterized accessor, a batch column preserves the resolved declared
 return type whenever every part of that type can legally be named from the
@@ -185,29 +187,31 @@ to the generated top-level class, the batch column also falls back to the
 erased array type. This fallback preserves schemas accepted by earlier
 versions, but necessarily loses generic argument checking for that column.
 
-Each column method selects `rowCount` values beginning at its independent
-offset. The source must be non-null, the offset must be non-negative, and the
-entire slice must fit in the source array. An offset equal to the array length
-is valid only for a zero-row batch. A positive batch requires every generated
-column method exactly once; missing and duplicate columns are rejected. A
-zero-row batch may be appended without supplying columns and is a no-op.
+Each column method requires a non-null source array containing at least
+`rowCount` elements. The first `rowCount` elements are copied. Longer arrays
+are accepted and their trailing elements are ignored. A too-short source array
+throws `IndexOutOfBoundsException` before that column is assigned, so the
+column remains available for correction. A positive batch requires every
+generated column method exactly once; missing and duplicate columns are
+rejected. A zero-row batch may be appended without supplying columns and is a
+no-op; its column methods accept any non-null empty or non-empty source array.
 
 An unfinished batch retains its source arrays but does not copy them until
 `append()` executes. Mutations to source-array elements before `append()` are
-therefore visible. A successful append copies `rowCount` values from every
-column without modifying the source arrays, then releases its references to
-those arrays. Later changes to source-array elements do not change stored
-values. Reference-valued columns still use the store's shallow reference
-semantics: referenced objects, including array-valued projection results, are
-not cloned.
+therefore visible within the copied prefix. A successful append copies the
+first `rowCount` values from every column without modifying the source arrays,
+then releases its references to those arrays. Later changes to source-array
+elements do not change stored values. Reference-valued columns still use the
+store's shallow reference semantics: referenced objects, including
+array-valued projection results, are not cloned.
 
 The destination starts at the store's size when `append()` executes, not when
 the batch is created. Consequently, multiple unfinished batches may be
 appended in any order, and their successful append calls interleave with
 `add` in execution order. Ordinary validation happens before the logical size
-changes. Missing-column and invalid-slice failures leave the batch available
-for correction and retry. After a successful append, the batch is consumed and
-cannot be reused.
+changes. Missing-column and too-short-source-array failures leave the batch
+available for correction and retry. After a successful append, the batch is
+consumed and cannot be reused.
 
 `batch` and `append` are building-state operations. Creating a batch on a
 sealed store fails, and sealing after batch creation makes `append()` fail
@@ -320,10 +324,9 @@ it allocates that initial capacity for every column.
 
 For a positive batch, append time is linear in the total number of copied
 values (`c * rowCount`) in addition to any growth work. An unfinished batch
-retains one source-array reference and offset per column until it is
-successfully appended; because caller-owned source arrays may be longer than
-`rowCount`, the amount of source storage kept reachable is not bounded by
-`rowCount`.
+retains one source-array reference per assigned column until it is successfully
+appended; because caller-owned source arrays may be longer than `rowCount`, the
+amount of source storage kept reachable is not bounded by `rowCount`.
 
 ## Thread safety
 
