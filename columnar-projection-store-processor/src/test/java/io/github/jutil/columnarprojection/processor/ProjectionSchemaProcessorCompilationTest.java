@@ -342,6 +342,8 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(appendStart >= 0, batch);
         assertTrue(appendEnd > appendStart, batch);
         String append = batch.substring(appendStart, appendEnd);
+        assertEquals(4, countOccurrences(append,
+                "java.lang.System.arraycopy("), append);
 
         int unconsumedCheck = append.indexOf("requireUnconsumed();");
         int sealedCheck = append.indexOf("if (sealed)");

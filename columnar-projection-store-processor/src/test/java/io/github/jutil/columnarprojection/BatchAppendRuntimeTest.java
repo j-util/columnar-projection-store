@@ -136,13 +136,13 @@ class BatchAppendRuntimeTest {
         assertThrows(IllegalStateException.class, batch::append);
         assertEquals(0, store.size());
 
-        batch.quantity(new int[] {7});
-        assertThrows(IllegalStateException.class, batch::append);
-        assertColumnSlotIsDefault(store, 0);
-        batch.symbol(new String[] {"seven"});
-        assertThrows(IllegalStateException.class, batch::append);
         byte[] payload = new byte[] {7};
         batch.payload(new byte[][] {payload});
+        batch.quantity(new int[] {7});
+        assertThrows(IllegalStateException.class, batch::append);
+        assertEquals(0, store.size());
+        assertColumnSlotIsDefault(store, 0);
+        batch.symbol(new String[] {"seven"});
         batch.append();
 
         assertEquals(1, store.size());
