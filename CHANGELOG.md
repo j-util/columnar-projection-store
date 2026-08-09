@@ -25,9 +25,11 @@ This file records user-visible changes to Columnar Projection Store.
   references.
 - Generated batch APIs cover every supported primitive, reference, inherited,
   covariant, and array-valued projection return type.
-- Parameterized batch columns preserve accessible resolved generic arguments,
-  with an erased compatibility fallback when an argument cannot be named from
-  generated source.
+- Batch column signatures preserve source-nameable Java type structure and
+  accessible resolved generic arguments while intentionally omitting type-use
+  annotations; projection interfaces remain authoritative for those
+  annotations. An erased compatibility fallback applies when an argument
+  cannot be named from generated source.
 - Generated batch types use a deterministic collision-safe name whenever
   `Batch`, `Batch_`, or a later candidate would shadow a named-package root or
   unnamed-package top-level type required by generated source.
@@ -37,6 +39,8 @@ This file records user-visible changes to Columnar Projection Store.
 - Generated stores now document both typed batch modes, including source-range
   validation, empty behavior, ownership, lifecycle, ordering, and complexity
   semantics.
+- Generated batch appends keep per-method work bounded so valid wide schemas
+  compile without changing validation or copy semantics.
 - API-boundary and growth-complexity documentation now distinguishes supported
   generated batch entry points from other generated details and accounts for
   `newCapacity` during large batch growth.

@@ -49,6 +49,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static final String GENERATED_CLASS_SUFFIX =
             "__ColumnarProjectionStore";
+    private static final int BATCH_HELPER_COLUMN_LIMIT = 128;
 
     private Elements elements;
     private Types types;
@@ -850,6 +851,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "appending are visible to the copy; mutations after a "
                 + "successful append do not change stored values. "
                 + "Reference-valued elements are copied as references.");
+        line(source, "     * Generated batch signatures preserve source-"
+                + "nameable Java type structure and generic arguments but "
+                + "intentionally omit type-use annotations; the projection "
+                + "interface remains authoritative for those annotations.");
         line(source, "     *");
         line(source, "     * <p>Validation failures leave logical store rows "
                 + "unchanged. A missing column, unequal whole-array length, "
@@ -925,14 +930,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "                throw new java.lang.IllegalStateException("
                 + "\"Store has been sealed\");");
         line(source, "            }");
-        for (int index = 0; index < accessors.size(); index++) {
-            line(source, "            if ((wholeArray || rowCount != 0)"
-                    + " && !assigned" + index + ") {");
-            line(source, "                throw new java.lang."
-                    + "IllegalStateException(\"Column "
-                    + accessors.get(index).name
-                    + " has not been supplied\");");
-            line(source, "            }");
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            line(source, "            requireColumns"
+                    + batchHelperIndex(chunkStart) + "();");
         }
         line(source, "            if (rowCount > java.lang.Integer.MAX_VALUE "
                 + "- size) {");
@@ -944,18 +945,22 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "+ rowCount;");
         line(source, "            ensureCapacity(requiredSize);");
         line(source, "            if (rowCount != 0) {");
-        for (int index = 0; index < accessors.size(); index++) {
-            line(source, "                java.lang.System.arraycopy(source"
-                    + index + ", sourceFromIndex, column" + index
-                    + ", destinationOffset, rowCount);");
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            line(source, "                copyColumns"
+                    + batchHelperIndex(chunkStart)
+                    + "(destinationOffset);");
         }
         line(source, "            }");
         line(source, "            size = requiredSize;");
-        for (int index = 0; index < accessors.size(); index++) {
-            line(source, "            source" + index + " = null;");
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            line(source, "            clearSources"
+                    + batchHelperIndex(chunkStart) + "();");
         }
         line(source, "            consumed = true;");
         line(source, "        }");
+        appendBatchHelpers(source, accessors);
         line(source, "");
         line(source, "        private void requireUnconsumed() {");
         line(source, "            if (consumed) {");
@@ -965,6 +970,52 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        }");
         line(source, "    }");
         line(source, "");
+    }
+
+    private void appendBatchHelpers(
+            StringBuilder source, List<Accessor> accessors) {
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            int chunkEnd = Math.min(
+                    chunkStart + BATCH_HELPER_COLUMN_LIMIT, accessors.size());
+            int helperIndex = batchHelperIndex(chunkStart);
+
+            line(source, "");
+            line(source, "        private void requireColumns" + helperIndex
+                    + "() {");
+            for (int index = chunkStart; index < chunkEnd; index++) {
+                line(source, "            if ((wholeArray || rowCount != 0)"
+                        + " && !assigned" + index + ") {");
+                line(source, "                throw new java.lang."
+                        + "IllegalStateException(\"Column "
+                        + accessors.get(index).name
+                        + " has not been supplied\");");
+                line(source, "            }");
+            }
+            line(source, "        }");
+
+            line(source, "");
+            line(source, "        private void copyColumns" + helperIndex
+                    + "(int destinationOffset) {");
+            for (int index = chunkStart; index < chunkEnd; index++) {
+                line(source, "            java.lang.System.arraycopy(source"
+                        + index + ", sourceFromIndex, column" + index
+                        + ", destinationOffset, rowCount);");
+            }
+            line(source, "        }");
+
+            line(source, "");
+            line(source, "        private void clearSources" + helperIndex
+                    + "() {");
+            for (int index = chunkStart; index < chunkEnd; index++) {
+                line(source, "            source" + index + " = null;");
+            }
+            line(source, "        }");
+        }
+    }
+
+    private static int batchHelperIndex(int chunkStart) {
+        return chunkStart / BATCH_HELPER_COLUMN_LIMIT;
     }
 
     private void appendBatchColumnMethod(

@@ -298,6 +298,12 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(batchStart >= 0, generated);
         assertTrue(batchEnd > batchStart, generated);
         String batch = generated.substring(batchStart, batchEnd);
+        assertEquals(1, countOccurrences(batch,
+                "Generated batch signatures preserve source-nameable Java "
+                        + "type structure and generic arguments but "
+                        + "intentionally omit type-use annotations; the "
+                        + "projection interface remains authoritative for "
+                        + "those annotations."), batch);
 
         assertTrue(generated.contains("public Batch batch()"), generated);
         assertTrue(generated.contains(
@@ -336,38 +342,47 @@ final class ProjectionSchemaProcessorCompilationTest {
                 ", sourceFromIndex, column"), batch);
         assertFalse(batch.contains("for ("), batch);
 
-        int appendStart = batch.indexOf("public void append()");
-        int appendEnd = batch.indexOf(
-                "private void requireUnconsumed()", appendStart);
-        assertTrue(appendStart >= 0, batch);
-        assertTrue(appendEnd > appendStart, batch);
-        String append = batch.substring(appendStart, appendEnd);
-        assertEquals(4, countOccurrences(append,
+        String append = methodSource(batch, "public void append()");
+        String requiredColumns = methodSource(
+                batch, "private void requireColumns0()");
+        String copyColumns = methodSource(
+                batch,
+                "private void copyColumns0(int destinationOffset)");
+        String clearSources = methodSource(
+                batch, "private void clearSources0()");
+        assertEquals(0, countOccurrences(append,
                 "java.lang.System.arraycopy("), append);
+        assertEquals(4, countOccurrences(copyColumns,
+                "java.lang.System.arraycopy("), copyColumns);
+        assertEquals(4, countOccurrences(requiredColumns,
+                "&& !assigned"), requiredColumns);
+        assertEquals(4, countOccurrences(clearSources,
+                " = null;"), clearSources);
+        assertEquals(countOccurrences(batch,
+                "java.lang.System.arraycopy("), countOccurrences(
+                        copyColumns, "java.lang.System.arraycopy("), batch);
 
         int unconsumedCheck = append.indexOf("requireUnconsumed();");
         int sealedCheck = append.indexOf("if (sealed)");
+        int requiredColumnsCall = append.indexOf("requireColumns0();");
         int overflowCheck = append.indexOf(
                 "rowCount > java.lang.Integer.MAX_VALUE - size");
         int capacityReservation = append.indexOf(
                 "ensureCapacity(requiredSize);");
-        int firstCopy = append.indexOf("java.lang.System.arraycopy(");
-        int lastCopy = append.lastIndexOf("java.lang.System.arraycopy(");
+        int copyColumnsCall = append.indexOf(
+                "copyColumns0(destinationOffset);");
         int sizeChange = append.indexOf("size = requiredSize;");
-        int sourceClear = append.indexOf("source0 = null;");
+        int sourceClear = append.indexOf("clearSources0();");
+        int consumedChange = append.indexOf("consumed = true;");
         assertTrue(unconsumedCheck >= 0 && unconsumedCheck < sealedCheck,
                 append);
-        assertTrue(sealedCheck < firstCopy, append);
-        for (int index = 0; index < 4; index++) {
-            int requiredColumnCheck = append.indexOf(
-                    "&& !assigned" + index + ")");
-            assertTrue(requiredColumnCheck > sealedCheck
-                    && requiredColumnCheck < overflowCheck, append);
-        }
+        assertTrue(sealedCheck < requiredColumnsCall, append);
+        assertTrue(requiredColumnsCall < overflowCheck, append);
         assertTrue(overflowCheck < capacityReservation, append);
-        assertTrue(capacityReservation < firstCopy, append);
-        assertTrue(lastCopy < sizeChange, batch);
-        assertTrue(sizeChange < sourceClear, batch);
+        assertTrue(capacityReservation < copyColumnsCall, append);
+        assertTrue(copyColumnsCall < sizeChange, append);
+        assertTrue(sizeChange < sourceClear, append);
+        assertTrue(sourceClear < consumedChange, append);
     }
 
     @Test
@@ -1156,6 +1171,29 @@ final class ProjectionSchemaProcessorCompilationTest {
             offset += fragment.length();
         }
         return count;
+    }
+
+    private static String methodSource(String value, String signature) {
+        int methodStart = value.indexOf(signature);
+        assertTrue(methodStart >= 0,
+                "Expected method signature <" + signature + "> in:\n" + value);
+        int openingBrace = value.indexOf('{', methodStart);
+        assertTrue(openingBrace >= 0,
+                "Expected method body for <" + signature + "> in:\n" + value);
+        int depth = 0;
+        for (int index = openingBrace; index < value.length(); index++) {
+            char character = value.charAt(index);
+            if (character == '{') {
+                depth++;
+            } else if (character == '}') {
+                depth--;
+                if (depth == 0) {
+                    return value.substring(methodStart, index + 1);
+                }
+            }
+        }
+        fail("Unclosed method body for <" + signature + "> in:\n" + value);
+        throw new AssertionError("unreachable");
     }
 
     private static final class Compilation {

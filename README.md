@@ -202,6 +202,9 @@ erased, reifiable arrays such as `List[]`. If a generic argument is inaccessible
 to the generated top-level class, the batch column also falls back to the
 erased array type. This fallback preserves schemas accepted by earlier
 versions, but necessarily loses generic argument checking for that column.
+Generated batch signatures preserve source-nameable Java type structure and
+generic arguments, but intentionally omit type-use annotations. The projection
+interface remains authoritative for type-use annotations.
 
 In whole-array mode, the first non-null array successfully assigned to a
 column establishes the row count. Every later column array must have exactly
