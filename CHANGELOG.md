@@ -26,8 +26,6 @@ This file records user-visible changes to Columnar Projection Store.
 - Generated stores now document their public constructor and typed batch API,
   including validation, ownership, lifecycle, ordering, and complexity
   semantics.
-- Batch column methods accept only their typed source array; the preliminary
-  second parameter and its per-column state have been removed.
 - API-boundary and growth-complexity documentation now distinguishes supported
   generated batch entry points from other generated details and accounts for
   `newCapacity` during large batch growth.
