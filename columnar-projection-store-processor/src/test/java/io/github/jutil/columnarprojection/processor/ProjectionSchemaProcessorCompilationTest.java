@@ -336,12 +336,34 @@ final class ProjectionSchemaProcessorCompilationTest {
                 ", sourceFromIndex, column"), batch);
         assertFalse(batch.contains("for ("), batch);
 
-        int sealedCheck = batch.indexOf("if (sealed)");
-        int firstCopy = batch.indexOf("java.lang.System.arraycopy(");
-        int lastCopy = batch.lastIndexOf("java.lang.System.arraycopy(");
-        int sizeChange = batch.indexOf("size = requiredSize;");
-        int sourceClear = batch.indexOf("source0 = null;");
-        assertTrue(sealedCheck >= 0 && sealedCheck < firstCopy, batch);
+        int appendStart = batch.indexOf("public void append()");
+        int appendEnd = batch.indexOf(
+                "private void requireUnconsumed()", appendStart);
+        assertTrue(appendStart >= 0, batch);
+        assertTrue(appendEnd > appendStart, batch);
+        String append = batch.substring(appendStart, appendEnd);
+
+        int unconsumedCheck = append.indexOf("requireUnconsumed();");
+        int sealedCheck = append.indexOf("if (sealed)");
+        int overflowCheck = append.indexOf(
+                "rowCount > java.lang.Integer.MAX_VALUE - size");
+        int capacityReservation = append.indexOf(
+                "ensureCapacity(requiredSize);");
+        int firstCopy = append.indexOf("java.lang.System.arraycopy(");
+        int lastCopy = append.lastIndexOf("java.lang.System.arraycopy(");
+        int sizeChange = append.indexOf("size = requiredSize;");
+        int sourceClear = append.indexOf("source0 = null;");
+        assertTrue(unconsumedCheck >= 0 && unconsumedCheck < sealedCheck,
+                append);
+        assertTrue(sealedCheck < firstCopy, append);
+        for (int index = 0; index < 4; index++) {
+            int requiredColumnCheck = append.indexOf(
+                    "&& !assigned" + index + ")");
+            assertTrue(requiredColumnCheck > sealedCheck
+                    && requiredColumnCheck < overflowCheck, append);
+        }
+        assertTrue(overflowCheck < capacityReservation, append);
+        assertTrue(capacityReservation < firstCopy, append);
         assertTrue(lastCopy < sizeChange, batch);
         assertTrue(sizeChange < sourceClear, batch);
     }

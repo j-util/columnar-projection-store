@@ -127,9 +127,10 @@ class BatchAppendRuntimeTest {
     }
 
     @Test
-    void wholeArrayAppendWithoutColumnsFailsAndCanBeRetried() {
+    void wholeArrayAppendWithoutColumnsDoesNotCopyAndCanBeRetried()
+            throws Exception {
         BatchProjection__ColumnarProjectionStore store =
-                new BatchProjection__ColumnarProjectionStore(0);
+                new BatchProjection__ColumnarProjectionStore(1);
         BatchProjection__ColumnarProjectionStore.Batch batch = store.batch();
 
         assertThrows(IllegalStateException.class, batch::append);
@@ -137,6 +138,7 @@ class BatchAppendRuntimeTest {
 
         batch.quantity(new int[] {7});
         assertThrows(IllegalStateException.class, batch::append);
+        assertColumnSlotIsDefault(store, 0);
         batch.symbol(new String[] {"seven"});
         assertThrows(IllegalStateException.class, batch::append);
         byte[] payload = new byte[] {7};
