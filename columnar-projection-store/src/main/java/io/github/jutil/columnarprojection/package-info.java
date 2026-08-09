@@ -4,10 +4,12 @@
  *
  * <p>Annotate an interface with
  * {@link io.github.jutil.columnarprojection.ProjectionSchema}, compile it with
- * annotation processing enabled, and create its store through
- * {@link io.github.jutil.columnarprojection.ProjectionStores}.
- * The generated concrete store is emitted into the schema package; its public
- * constructor and typed batch API are also supported. All other generated
- * implementation details are unsupported.
+ * annotation processing enabled, and create its common row-oriented store
+ * through {@link io.github.jutil.columnarprojection.ProjectionStores}. For
+ * typed batching, prefer the generated public schema-specific store contract;
+ * its static factory delegates construction to {@code ProjectionStores}. The
+ * generated contract and concrete store are emitted into the schema package.
+ * The contract and the concrete store's public constructor are supported; all
+ * other generated implementation details are unsupported.
  */
 package io.github.jutil.columnarprojection;

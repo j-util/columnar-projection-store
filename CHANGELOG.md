@@ -2,16 +2,17 @@
 
 This file records user-visible changes to Columnar Projection Store.
 
-## Unreleased
-
-## 1.2.0 - 2026-08-09
+## 1.2.0 - Unreleased
 
 ### Added
 
-- Every projection schema now generates a public `<Projection>Store` interface
-  that extends `ProjectionStore<Projection>`, provides a checked static factory
-  delegating to `ProjectionStores.create`, and exposes a store-specific,
-  type-safe batch contract without requiring the concrete implementation type.
+- Every projection schema now generates a public schema-specific store
+  interface that extends `ProjectionStore<Projection>`, provides a checked
+  static factory delegating to `ProjectionStores.create`, and exposes a
+  store-specific, type-safe batch contract without requiring the concrete
+  implementation type. Top-level names use the schema's binary name, so a
+  member schema `Outer.PriceProjection` generates the top-level contract
+  `Outer$PriceProjectionStore`.
 - The generated batch contract provides `batch()` for whole source arrays and
   `batch(sourceFromIndex, sourceToIndex)` for a common half-open source range.
 - Whole-array batches infer their row count from the first accepted column,
@@ -36,15 +37,26 @@ This file records user-visible changes to Columnar Projection Store.
 - Generated batch types use a deterministic collision-safe name whenever
   `Batch`, `Batch_`, or a later candidate would shadow a named-package root or
   unnamed-package top-level type required by generated source.
-- Generated store-contract and private batch-implementation names use the same
-  deterministic underscore rule when their ordinary names would shadow a type
-  root required by generated source.
+- Generated store-contract names append underscores when their ordinary or
+  later candidates are existing packages or would shadow a type root required
+  by generated source. Thus packages named `example.SchemaStore` and
+  `example.SchemaStore_` make `example.Schema` generate `SchemaStore__`.
+- Private batch-implementation names use the deterministic underscore rule when
+  their ordinary names would shadow a type root required by generated source.
 - Generated store-contract, implementation, and private batch-implementation
   names are collision-checked; conflicts produce compiler diagnostics instead
   of silently skipping or overwriting types.
 
 ### Changed
 
+- Processor-owned contracts and concrete implementations from an earlier
+  compilation are recognized on the class path, so unchanged schemas and
+  accessor changes that preserve generated top-level names compile repeatedly
+  without a clean build. Current-source, external user-type, and cross-schema
+  collisions remain errors.
+- Schema evolution that changes a generated top-level name reports the specific
+  stale output and requests a clean rebuild when that output cannot be removed
+  safely.
 - Generated store interfaces now document construction, both typed batch modes,
   column setters, source-range validation, empty behavior, ownership,
   lifecycle, ordering, and complexity semantics.

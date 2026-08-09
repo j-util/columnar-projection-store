@@ -82,13 +82,20 @@ class GeneratedStoreContractRuntimeTest {
                         "batch", Integer.TYPE, Integer.TYPE).getReturnType());
 
         Class<?> batchImplementation = null;
+        Class<?> generationProvenance = null;
         for (Class<?> nested : concrete.getDeclaredClasses()) {
             if (batchContract.isAssignableFrom(nested)) {
                 batchImplementation = nested;
+            } else if (nested.isAnnotation()) {
+                generationProvenance = nested;
             }
         }
         assertTrue(batchImplementation != null);
+        assertTrue(generationProvenance != null);
         assertTrue(Modifier.isPrivate(batchImplementation.getModifiers()));
+        assertFalse(Modifier.isPublic(generationProvenance.getModifiers()));
+        assertFalse(Modifier.isProtected(
+                generationProvenance.getModifiers()));
         assertEquals(1, batchImplementation.getInterfaces().length);
         assertSame(batchContract, batchImplementation.getInterfaces()[0]);
         for (Method method : batchImplementation.getDeclaredMethods()) {

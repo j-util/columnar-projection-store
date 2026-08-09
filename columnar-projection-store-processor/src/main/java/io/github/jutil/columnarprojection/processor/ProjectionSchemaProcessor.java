@@ -18,6 +18,8 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.AnnotationMirror;
+import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
@@ -41,11 +43,13 @@ import javax.tools.JavaFileObject;
  * implementation for every interface annotated with {@code ProjectionSchema}.
  *
  * <p>The processor is normally discovered by the Java compiler through its
- * service-provider configuration. The generated {@code <Projection>Store}
- * interface is the recommended schema-specific API and delegates construction
- * to {@code ProjectionStores}. The generated concrete store constructor remains
- * supported for direct construction; all other generated implementation
- * details are unsupported.
+ * service-provider configuration. The generated schema-specific store
+ * interface is the recommended API and delegates construction to
+ * {@code ProjectionStores}. Its ordinary top-level name is the schema's binary
+ * simple name followed by {@code Store}; package and required-source-name
+ * conflicts may add trailing underscores. The generated concrete store
+ * constructor remains supported for direct construction; all other generated
+ * implementation details are unsupported.
  */
 @SupportedAnnotationTypes(
         "io.github.jutil.columnarprojection.ProjectionSchema")
@@ -54,6 +58,12 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     private static final String GENERATED_CLASS_SUFFIX =
             "__ColumnarProjectionStore";
     private static final String GENERATED_STORE_SUFFIX = "Store";
+    private static final String PROVENANCE_GENERATOR =
+            "io.github.jutil.columnarprojection.processor."
+                    + "ProjectionSchemaProcessor:1";
+    private static final String PROVENANCE_ROLE_CONTRACT = "contract";
+    private static final String PROVENANCE_ROLE_IMPLEMENTATION =
+            "implementation";
     private static final int BATCH_HELPER_COLUMN_LIMIT = 128;
 
     private Elements elements;
@@ -70,6 +80,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             new LinkedHashMap<String, TypeElement>();
     private final Map<String, TypeElement> declaredTypes =
             new LinkedHashMap<String, TypeElement>();
+    private final Set<String> declaredPackages =
+            new LinkedHashSet<String>();
 
     /**
      * Creates a processor. Compiler service discovery uses this constructor.
@@ -121,6 +133,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             return false;
         }
         for (Element root : roundEnvironment.getRootElements()) {
+            declaredPackages.add(elements.getPackageOf(root)
+                    .getQualifiedName().toString());
             collectDeclaredTypes(root);
         }
         for (Element element : roundEnvironment
@@ -147,6 +161,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
 
         SchemaModel model = schemaModel(schema, accessors);
+        if (model == null) {
+            return;
+        }
         if (!claimGeneratedTypes(model)) {
             return;
         }
@@ -186,9 +203,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
 
         boolean available = generatedNameAvailable(
-                model.schema, model.storeQualifiedName);
+                model, model.storeQualifiedName);
         available &= generatedNameAvailable(
-                model.schema, model.implementationQualifiedName);
+                model, model.implementationQualifiedName);
         if (!available) {
             return false;
         }
@@ -198,10 +215,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private boolean generatedNameAvailable(
-            TypeElement schema, String generatedName) {
+            SchemaModel model, String generatedName) {
         TypeElement owner = generatedTypes.get(generatedName);
         if (owner != null) {
-            error(schema,
+            error(model.schema,
                     "Generated type name collision: " + generatedName
                             + " is already generated for projection schema "
                             + owner.getQualifiedName());
@@ -209,17 +226,41 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
 
         TypeElement declaredType = declaredTypes.get(generatedName);
-        if (declaredType == null) {
-            declaredType = elements.getTypeElement(generatedName);
-        }
         if (declaredType != null) {
-            error(schema,
+            generatedNameCollision(model.schema, generatedName, declaredType);
+            return false;
+        }
+
+        TypeElement classpathType = typeByBinaryName(generatedName);
+        if (classpathType != null
+                && !isProcessorOwned(
+                        classpathType,
+                        model.schemaBinaryName,
+                        model.storeQualifiedName,
+                        model.implementationQualifiedName,
+                        generatedName)) {
+            generatedNameCollision(
+                    model.schema, generatedName, classpathType);
+            return false;
+        }
+        if (declaredPackages.contains(generatedName)
+                || elements.getPackageElement(generatedName) != null) {
+            error(model.schema,
                     "Generated type name collision: " + generatedName
-                            + " is already declared by "
-                            + declaredType.getQualifiedName());
+                            + " is already declared as a package");
             return false;
         }
         return true;
+    }
+
+    private void generatedNameCollision(
+            TypeElement schema,
+            String generatedName,
+            TypeElement declaredType) {
+        error(schema,
+                "Generated type name collision: " + generatedName
+                        + " is already declared by "
+                        + declaredType.getQualifiedName());
     }
 
     private void writeGeneratedSource(
@@ -660,28 +701,306 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 ? ""
                 : packageName + ".";
         String baseStoreQualifiedName = namePrefix + baseStoreSimpleName;
-        String storeSimpleName = declaredType(baseStoreQualifiedName) == null
-                ? nestedTypeName(
-                        baseStoreSimpleName, schema, accessors)
-                : baseStoreSimpleName;
+        String implementationQualifiedName =
+                namePrefix + implementationSimpleName;
+        GenerationProvenance previousGeneration = previousGeneration(
+                binaryName,
+                baseStoreQualifiedName,
+                implementationQualifiedName);
+        Set<String> unavailableNames = sourceTypeLeadingIdentifiers(
+                schema, accessors);
+        addStaleShadowedStoreRoot(
+                unavailableNames,
+                accessors,
+                packageName,
+                previousGeneration);
+        String storeSimpleName = storeContractSimpleName(
+                baseStoreSimpleName,
+                namePrefix,
+                binaryName,
+                implementationQualifiedName,
+                unavailableNames);
+        String storeQualifiedName = namePrefix + storeSimpleName;
+        if (previousGeneration != null
+                && !previousGeneration.storeQualifiedName.equals(
+                        storeQualifiedName)
+                && !generatedStoreNameCollides(
+                        storeQualifiedName,
+                        binaryName,
+                        implementationQualifiedName)) {
+            error(schema,
+                    "Generated store contract name changed for projection "
+                            + "schema " + schema.getQualifiedName()
+                            + " from "
+                            + previousGeneration.storeQualifiedName
+                            + " to " + storeQualifiedName
+                            + "; stale generated output cannot be removed "
+                            + "safely. Clean the compilation output and "
+                            + "recompile.");
+            return null;
+        }
         return new SchemaModel(
                 schema,
                 accessors,
                 packageName,
                 schema.getQualifiedName().toString(),
+                binaryName,
                 storeSimpleName,
-                namePrefix + storeSimpleName,
+                storeQualifiedName,
                 implementationSimpleName,
-                namePrefix + implementationSimpleName,
+                implementationQualifiedName,
                 batchTypeName(schema, accessors),
-                nestedTypeName("BatchImplementation", schema, accessors));
+                nestedTypeName("BatchImplementation", schema, accessors),
+                nestedTypeName("GeneratedProvenance", schema, accessors));
     }
 
-    private TypeElement declaredType(String qualifiedName) {
-        TypeElement declaredType = declaredTypes.get(qualifiedName);
-        return declaredType != null
-                ? declaredType
-                : elements.getTypeElement(qualifiedName);
+    private boolean generatedStoreNameCollides(
+            String generatedName,
+            String schemaBinaryName,
+            String implementationQualifiedName) {
+        if (generatedTypes.containsKey(generatedName)
+                || declaredTypes.containsKey(generatedName)) {
+            return true;
+        }
+        TypeElement existingType = typeByBinaryName(generatedName);
+        return existingType != null
+                && !isProcessorOwned(
+                        existingType,
+                        schemaBinaryName,
+                        generatedName,
+                        implementationQualifiedName,
+                        generatedName);
+    }
+
+    private String storeContractSimpleName(
+            String baseSimpleName,
+            String namePrefix,
+            String schemaBinaryName,
+            String implementationQualifiedName,
+            Set<String> unavailableNames) {
+        String candidate = baseSimpleName;
+        while (true) {
+            String qualifiedName = namePrefix + candidate;
+            if (generatedTypes.containsKey(qualifiedName)
+                    || declaredTypes.containsKey(qualifiedName)) {
+                return candidate;
+            }
+
+            TypeElement existingType = typeByBinaryName(qualifiedName);
+            if (existingType != null
+                    && !isProcessorOwned(
+                            existingType,
+                            schemaBinaryName,
+                            qualifiedName,
+                            implementationQualifiedName,
+                            qualifiedName)) {
+                return candidate;
+            }
+            if (declaredPackages.contains(qualifiedName)
+                    || elements.getPackageElement(qualifiedName) != null
+                    || unavailableNames.contains(candidate)) {
+                candidate += "_";
+                continue;
+            }
+            return candidate;
+        }
+    }
+
+    private GenerationProvenance previousGeneration(
+            String schemaBinaryName,
+            String baseStoreQualifiedName,
+            String implementationQualifiedName) {
+        if (declaredTypes.containsKey(implementationQualifiedName)) {
+            return null;
+        }
+        TypeElement implementation =
+                typeByBinaryName(implementationQualifiedName);
+        GenerationProvenance provenance =
+                generationProvenance(implementation);
+        if (provenance == null
+                || !PROVENANCE_ROLE_IMPLEMENTATION.equals(provenance.role)
+                || !schemaBinaryName.equals(provenance.schemaBinaryName)
+                || !implementationQualifiedName.equals(
+                        provenance.implementationQualifiedName)
+                || !isStoreContractName(
+                        baseStoreQualifiedName,
+                        provenance.storeQualifiedName)) {
+            return null;
+        }
+        return provenance;
+    }
+
+    private boolean isStoreContractName(
+            String baseName, String candidate) {
+        return hasOnlyUnderscoreSuffix(baseName, candidate);
+    }
+
+    private boolean hasOnlyUnderscoreSuffix(
+            String baseName, String candidate) {
+        if (!candidate.startsWith(baseName)) {
+            return false;
+        }
+        for (int index = baseName.length(); index < candidate.length();
+                index++) {
+            if (candidate.charAt(index) != '_') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isProcessorOwned(
+            TypeElement generatedType,
+            String schemaBinaryName,
+            String storeQualifiedName,
+            String implementationQualifiedName,
+            String generatedName) {
+        GenerationProvenance provenance =
+                generationProvenance(generatedType);
+        return provenance != null
+                && schemaBinaryName.equals(provenance.schemaBinaryName)
+                && storeQualifiedName.equals(
+                        provenance.storeQualifiedName)
+                && implementationQualifiedName.equals(
+                        provenance.implementationQualifiedName)
+                && (PROVENANCE_ROLE_CONTRACT.equals(provenance.role)
+                        && generatedName.equals(
+                                provenance.storeQualifiedName)
+                    || PROVENANCE_ROLE_IMPLEMENTATION.equals(provenance.role)
+                        && generatedName.equals(
+                                provenance.implementationQualifiedName));
+    }
+
+    private GenerationProvenance generationProvenance(
+            TypeElement generatedType) {
+        if (generatedType == null) {
+            return null;
+        }
+        String generatedBinaryName =
+                elements.getBinaryName(generatedType).toString();
+        for (AnnotationMirror annotation :
+                generatedType.getAnnotationMirrors()) {
+            Element annotationElement =
+                    annotation.getAnnotationType().asElement();
+            if (!(annotationElement instanceof TypeElement)
+                    || annotationElement.getKind()
+                            != ElementKind.ANNOTATION_TYPE
+                    || annotationElement.getModifiers()
+                            .contains(Modifier.PUBLIC)
+                    || annotationElement.getModifiers()
+                            .contains(Modifier.PROTECTED)
+                    || annotationElement.getModifiers()
+                            .contains(Modifier.PRIVATE)
+                    || !hasOnlyUnderscoreSuffix(
+                            "GeneratedProvenance",
+                            annotationElement.getSimpleName().toString())) {
+                continue;
+            }
+            Element enclosing = annotationElement.getEnclosingElement();
+            if (!(enclosing instanceof TypeElement)) {
+                continue;
+            }
+
+            Map<String, String> values = annotationStringValues(annotation);
+            if (values.size() != 5
+                    || !PROVENANCE_GENERATOR.equals(values.get("generator"))) {
+                continue;
+            }
+            String schemaBinaryName = values.get("schema");
+            String storeQualifiedName = values.get("store");
+            String implementationQualifiedName =
+                    values.get("implementation");
+            String role = values.get("role");
+            boolean roleMatchesGeneratedType =
+                    (PROVENANCE_ROLE_CONTRACT.equals(role)
+                            && storeQualifiedName != null
+                            && storeQualifiedName.equals(generatedBinaryName))
+                    || (PROVENANCE_ROLE_IMPLEMENTATION.equals(role)
+                            && implementationQualifiedName != null
+                            && implementationQualifiedName.equals(
+                                    generatedBinaryName));
+            if (schemaBinaryName == null
+                    || storeQualifiedName == null
+                    || implementationQualifiedName == null
+                    || role == null
+                    || !implementationQualifiedName.equals(
+                            elements.getBinaryName((TypeElement) enclosing)
+                                    .toString())
+                    || !roleMatchesGeneratedType) {
+                continue;
+            }
+            return new GenerationProvenance(
+                    schemaBinaryName,
+                    storeQualifiedName,
+                    implementationQualifiedName,
+                    role);
+        }
+        return null;
+    }
+
+    private Map<String, String> annotationStringValues(
+            AnnotationMirror annotation) {
+        Map<String, String> values = new LinkedHashMap<String, String>();
+        for (Map.Entry<? extends ExecutableElement,
+                ? extends AnnotationValue> entry
+                : annotation.getElementValues().entrySet()) {
+            Object value = entry.getValue().getValue();
+            if (!(value instanceof String)) {
+                return Collections.emptyMap();
+            }
+            values.put(entry.getKey().getSimpleName().toString(),
+                    (String) value);
+        }
+        return values;
+    }
+
+    private TypeElement typeByBinaryName(String binaryName) {
+        TypeElement declaredType = declaredTypes.get(binaryName);
+        if (declaredType != null) {
+            return declaredType;
+        }
+        TypeElement direct = elements.getTypeElement(binaryName);
+        if (direct != null
+                && elements.getBinaryName(direct).contentEquals(binaryName)) {
+            return direct;
+        }
+
+        int packageEnd = binaryName.lastIndexOf('.');
+        String packageName = packageEnd < 0
+                ? ""
+                : binaryName.substring(0, packageEnd);
+        PackageElement packageElement =
+                elements.getPackageElement(packageName);
+        if (packageElement == null) {
+            return null;
+        }
+        for (Element enclosed : packageElement.getEnclosedElements()) {
+            if (enclosed instanceof TypeElement) {
+                TypeElement match = typeByBinaryName(
+                        (TypeElement) enclosed, binaryName);
+                if (match != null) {
+                    return match;
+                }
+            }
+        }
+        return null;
+    }
+
+    private TypeElement typeByBinaryName(
+            TypeElement type, String binaryName) {
+        if (elements.getBinaryName(type).contentEquals(binaryName)) {
+            return type;
+        }
+        for (Element enclosed : type.getEnclosedElements()) {
+            if (enclosed instanceof TypeElement) {
+                TypeElement match = typeByBinaryName(
+                        (TypeElement) enclosed, binaryName);
+                if (match != null) {
+                    return match;
+                }
+            }
+        }
+        return null;
     }
 
     private String generateStoreInterfaceSource(SchemaModel model) {
@@ -701,6 +1020,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "mutation are not thread-safe. After sealing and safe "
                 + "publication, reads follow the inherited store contract.");
         line(source, " */");
+        appendProvenanceAnnotation(
+                source, model, PROVENANCE_ROLE_CONTRACT);
         line(source, "public interface " + model.storeSimpleName);
         line(source, "        extends io.github.jutil.columnarprojection."
                 + "ProjectionStore<" + model.schemaName + "> {");
@@ -888,10 +1209,13 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "direct construction. The recommended schema-specific "
                 + "contract is {@link " + model.storeQualifiedName + "}.");
         line(source, " */");
+        appendProvenanceAnnotation(
+                source, model, PROVENANCE_ROLE_IMPLEMENTATION);
         line(source, "@java.lang.SuppressWarnings({\"unchecked\", \"rawtypes\"})");
         line(source, "public final class " + generatedSimpleName);
         line(source, "        implements " + model.storeQualifiedName + " {");
         line(source, "");
+        appendProvenanceType(source, model.provenanceTypeName);
         line(source, "    private int size;");
         line(source, "    private int capacity;");
         line(source, "    private boolean sealed;");
@@ -918,6 +1242,38 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         appendCursor(source, schemaName);
         line(source, "}");
         return source.toString();
+    }
+
+    private void appendProvenanceAnnotation(
+            StringBuilder source, SchemaModel model, String role) {
+        line(source, "@" + model.implementationQualifiedName + "."
+                + model.provenanceTypeName + "(");
+        line(source, "        generator = \"" + PROVENANCE_GENERATOR + "\",");
+        line(source, "        schema = \"" + model.schemaBinaryName + "\",");
+        line(source, "        store = \"" + model.storeQualifiedName + "\",");
+        line(source, "        implementation = \""
+                + model.implementationQualifiedName + "\",");
+        line(source, "        role = \"" + role + "\")");
+    }
+
+    private void appendProvenanceType(
+            StringBuilder source, String provenanceTypeName) {
+        line(source, "    @java.lang.annotation.Retention(");
+        line(source, "            java.lang.annotation.RetentionPolicy.CLASS)");
+        line(source, "    @java.lang.annotation.Target(");
+        line(source, "            java.lang.annotation.ElementType.TYPE)");
+        line(source, "    @interface " + provenanceTypeName + " {");
+        line(source, "        String generator();");
+        line(source, "");
+        line(source, "        String schema();");
+        line(source, "");
+        line(source, "        String store();");
+        line(source, "");
+        line(source, "        String implementation();");
+        line(source, "");
+        line(source, "        String role();");
+        line(source, "    }");
+        line(source, "");
     }
 
     private void appendConstructor(
@@ -1585,6 +1941,18 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             String baseName,
             TypeElement schema,
             List<Accessor> accessors) {
+        Set<String> unavailableNames =
+                sourceTypeLeadingIdentifiers(schema, accessors);
+
+        String name = baseName;
+        while (unavailableNames.contains(name)) {
+            name += "_";
+        }
+        return name;
+    }
+
+    private Set<String> sourceTypeLeadingIdentifiers(
+            TypeElement schema, List<Accessor> accessors) {
         Set<String> unavailableNames = new LinkedHashSet<String>();
         addLeadingIdentifier(
                 schema.getQualifiedName().toString(), unavailableNames);
@@ -1596,12 +1964,108 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                         accessor.declaredReturnType, unavailableNames);
             }
         }
+        return unavailableNames;
+    }
 
-        String name = baseName;
-        while (unavailableNames.contains(name)) {
-            name += "_";
+    private void addStaleShadowedStoreRoot(
+            Set<String> unavailableNames,
+            List<Accessor> accessors,
+            String packageName,
+            GenerationProvenance previousGeneration) {
+        if (previousGeneration == null) {
+            return;
         }
-        return name;
+        String namePrefix = packageName.length() == 0
+                ? ""
+                : packageName + ".";
+        if (!previousGeneration.storeQualifiedName.startsWith(namePrefix)) {
+            return;
+        }
+        String previousStoreSimpleName =
+                previousGeneration.storeQualifiedName.substring(
+                        namePrefix.length());
+        for (Accessor accessor : accessors) {
+            addStaleShadowedStoreRoot(
+                    unavailableNames,
+                    accessor.declaredReturnType,
+                    previousGeneration.storeQualifiedName,
+                    previousStoreSimpleName);
+        }
+    }
+
+    private void addStaleShadowedStoreRoot(
+            Set<String> unavailableNames,
+            TypeMirror type,
+            String previousStoreQualifiedName,
+            String previousStoreSimpleName) {
+        if (type.getKind() == TypeKind.ARRAY) {
+            addStaleShadowedStoreRoot(
+                    unavailableNames,
+                    ((ArrayType) type).getComponentType(),
+                    previousStoreQualifiedName,
+                    previousStoreSimpleName);
+            return;
+        }
+        if (type.getKind() == TypeKind.WILDCARD) {
+            WildcardType wildcard = (WildcardType) type;
+            if (wildcard.getExtendsBound() != null) {
+                addStaleShadowedStoreRoot(
+                        unavailableNames,
+                        wildcard.getExtendsBound(),
+                        previousStoreQualifiedName,
+                        previousStoreSimpleName);
+            }
+            if (wildcard.getSuperBound() != null) {
+                addStaleShadowedStoreRoot(
+                        unavailableNames,
+                        wildcard.getSuperBound(),
+                        previousStoreQualifiedName,
+                        previousStoreSimpleName);
+            }
+            return;
+        }
+        if (type.getKind() != TypeKind.DECLARED
+                && type.getKind() != TypeKind.ERROR) {
+            return;
+        }
+
+        DeclaredType declaredType = (DeclaredType) type;
+        if (type.getKind() == TypeKind.ERROR) {
+            TypeElement typeElement =
+                    (TypeElement) declaredType.asElement();
+            String qualifiedName =
+                    typeElement.getQualifiedName().toString();
+            String stalePrefix = previousStoreQualifiedName + ".";
+            if (qualifiedName.startsWith(stalePrefix)) {
+                String suffix = qualifiedName.substring(stalePrefix.length());
+                String alternateName =
+                        previousStoreSimpleName + "." + suffix;
+                if (sourceTypeExists(qualifiedName)
+                        || sourceTypeExists(alternateName)) {
+                    unavailableNames.add(previousStoreSimpleName);
+                }
+            }
+        }
+        TypeMirror enclosingType = declaredType.getEnclosingType();
+        if (enclosingType.getKind() != TypeKind.NONE) {
+            addStaleShadowedStoreRoot(
+                    unavailableNames,
+                    enclosingType,
+                    previousStoreQualifiedName,
+                    previousStoreSimpleName);
+        }
+        for (TypeMirror argument : declaredType.getTypeArguments()) {
+            addStaleShadowedStoreRoot(
+                    unavailableNames,
+                    argument,
+                    previousStoreQualifiedName,
+                    previousStoreSimpleName);
+        }
+    }
+
+    private boolean sourceTypeExists(String canonicalName) {
+        return declaredTypes.containsKey(canonicalName)
+                || elements.getTypeElement(canonicalName) != null;
     }
 
     private void collectSourceTypeLeadingIdentifiers(
@@ -1639,34 +2103,58 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         private final List<Accessor> accessors;
         private final String packageName;
         private final String schemaName;
+        private final String schemaBinaryName;
         private final String storeSimpleName;
         private final String storeQualifiedName;
         private final String implementationSimpleName;
         private final String implementationQualifiedName;
         private final String batchTypeName;
         private final String batchImplementationTypeName;
+        private final String provenanceTypeName;
 
         private SchemaModel(
                 TypeElement schema,
                 List<Accessor> accessors,
                 String packageName,
                 String schemaName,
+                String schemaBinaryName,
                 String storeSimpleName,
                 String storeQualifiedName,
                 String implementationSimpleName,
                 String implementationQualifiedName,
                 String batchTypeName,
-                String batchImplementationTypeName) {
+                String batchImplementationTypeName,
+                String provenanceTypeName) {
             this.schema = schema;
             this.accessors = accessors;
             this.packageName = packageName;
             this.schemaName = schemaName;
+            this.schemaBinaryName = schemaBinaryName;
             this.storeSimpleName = storeSimpleName;
             this.storeQualifiedName = storeQualifiedName;
             this.implementationSimpleName = implementationSimpleName;
             this.implementationQualifiedName = implementationQualifiedName;
             this.batchTypeName = batchTypeName;
             this.batchImplementationTypeName = batchImplementationTypeName;
+            this.provenanceTypeName = provenanceTypeName;
+        }
+    }
+
+    private static final class GenerationProvenance {
+        private final String schemaBinaryName;
+        private final String storeQualifiedName;
+        private final String implementationQualifiedName;
+        private final String role;
+
+        private GenerationProvenance(
+                String schemaBinaryName,
+                String storeQualifiedName,
+                String implementationQualifiedName,
+                String role) {
+            this.schemaBinaryName = schemaBinaryName;
+            this.storeQualifiedName = storeQualifiedName;
+            this.implementationQualifiedName = implementationQualifiedName;
+            this.role = role;
         }
     }
 

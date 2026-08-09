@@ -18,9 +18,9 @@ dependencies and targets Java 8.
 
 ## Status and installation
 
-Version `1.2.0` adds a generated, type-safe batch API for appending column
-arrays while preserving the row-oriented API and storage semantics introduced
-in `1.0.0`.
+Unreleased version `1.2.0` adds a generated, type-safe batch API for appending
+column arrays while preserving the row-oriented API and storage semantics
+introduced in `1.0.0`.
 Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
 and
@@ -196,6 +196,10 @@ prices.batch(sourceFromIndex, sourceToIndex)
         .append();
 ```
 
+Generated top-level names use the projection's binary name. Consequently, a
+member schema named `Outer.PriceProjection` generates the top-level contract
+`Outer$PriceProjectionStore`, not `PriceProjectionStore` nested inside `Outer`.
+
 `sourceFromIndex` is inclusive and `sourceToIndex` is exclusive. They are
 indexes into each supplied source array, never indexes into the store. Both
 modes always append at the store's current size when `append()` executes; they
@@ -208,12 +212,25 @@ underscores. This covers named-package roots and unnamed-package top-level
 types. Chained use through either `batch` factory, as above, does not require
 callers to spell the nested type name.
 
-The generated store contract is ordinarily named `<Projection>Store`. The same
-deterministic underscore rule applies only when that name would shadow a source
-type root needed by the contract. If the resulting generated contract or
-concrete implementation name is already declared by user code, compilation
-fails with a generated-name collision diagnostic; the processor never
-overwrites or silently skips the type.
+The generated store contract ordinarily uses the projection's binary simple
+name followed by `Store`. If that candidate is an existing package or would
+shadow a source type root needed by the contract, the processor appends
+underscores until neither conflict remains. For example, a schema named
+`example.Schema` generates `example.SchemaStore_` when `example.SchemaStore` is
+a package, and `example.SchemaStore__` when both `example.SchemaStore` and
+`example.SchemaStore_` are packages. If the selected generated contract or the
+fixed concrete implementation name is already declared by user code,
+compilation fails with a generated-name collision diagnostic; the processor
+does not rename around, overwrite, or silently skip a user type.
+
+The processor recognizes its own contract and concrete implementation from a
+previous compilation. An unchanged schema, or a schema with changed accessors
+but unchanged generated top-level names, can therefore be compiled again with
+the previous class output on the class path without a clean build. Current
+source declarations, external class-path types, and cross-schema conflicts
+remain collisions. If schema evolution selects a different generated top-level
+name and stale output cannot be removed safely, compilation reports the
+specific stale name and requests a clean rebuild.
 
 For a parameterized accessor, a batch column preserves the resolved declared
 return type whenever every part of that type can legally be named from the

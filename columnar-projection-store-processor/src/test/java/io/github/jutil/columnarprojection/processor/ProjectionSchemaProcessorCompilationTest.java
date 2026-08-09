@@ -2,11 +2,18 @@ package io.github.jutil.columnarprojection.processor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
+import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.URI;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -466,8 +473,11 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "PriceProjectionStore.class.cast(store)"), contract);
         assertTrue(contract.contains(
                 "clean and recompile using the current"), contract);
-        assertFalse(contract.contains(
-                "PriceProjection__ColumnarProjectionStore"), contract);
+        String factory = methodSource(
+                contract,
+                "static PriceProjectionStore create(int expectedSize)");
+        assertFalse(factory.contains(
+                "PriceProjection__ColumnarProjectionStore"), factory);
         assertFalse(contract.contains("@java.lang.SuppressWarnings"), contract);
         assertFalse(contract.contains("(PriceProjectionStore)"), contract);
         assertTrue(implementation.contains(
@@ -476,6 +486,207 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "private final class BatchImplementation implements "
                         + "example.PriceProjectionStore.Batch"),
                 implementation);
+    }
+
+    @Test
+    void recompilesIdenticalSchemaWithPriorClassOutputOnClasspath()
+            throws IOException {
+        String source = "package example;\n"
+                + "import io.github.jutil.columnarprojection."
+                + "ProjectionSchema;\n"
+                + "@ProjectionSchema\n"
+                + "public interface RepeatedProjection {\n"
+                + "    int quantity();\n"
+                + "    String symbol();\n"
+                + "}\n";
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "identical-recompilation");
+
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource("example.RepeatedProjection", source));
+
+        assertSucceeded(first);
+        String firstContract = generatedStoreSource(
+                first, "example.RepeatedProjection");
+        String firstImplementation = generatedSource(
+                first, "example.RepeatedProjection");
+
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource("example.RepeatedProjection", source));
+
+        assertSucceeded(second);
+        assertEquals(firstContract, generatedStoreSource(
+                second, "example.RepeatedProjection"));
+        assertEquals(firstImplementation, generatedSource(
+                second, "example.RepeatedProjection"));
+    }
+
+    @Test
+    void recompilesEvolvedSchemaAndRunsFactoryAndBothBatchModes()
+            throws Exception {
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "evolved-recompilation");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.EvolvedProjection",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface EvolvedProjection {\n"
+                                + "    int quantity();\n"
+                                + "}\n"));
+
+        assertSucceeded(first);
+
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource(
+                        "example.EvolvedProjection",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface EvolvedProjection {\n"
+                                + "    int quantity();\n"
+                                + "    String symbol();\n"
+                                + "}\n"),
+                new StringSource(
+                        "example.EvolvedProjectionConsumer",
+                        "package example;\n"
+                                + "public final class "
+                                + "EvolvedProjectionConsumer {\n"
+                                + "    private EvolvedProjectionConsumer() { }\n"
+                                + "    public static void verify() {\n"
+                                + "        EvolvedProjectionStore store = "
+                                + "EvolvedProjectionStore.create(1);\n"
+                                + "        store.batch()\n"
+                                + "                .quantity(new int[]"
+                                + "{10, 20})\n"
+                                + "                .symbol(new String[]"
+                                + "{\"A\", \"B\"})\n"
+                                + "                .append();\n"
+                                + "        store.batch(1, 3)\n"
+                                + "                .quantity(new int[]"
+                                + "{0, 30, 40})\n"
+                                + "                .symbol(new String[]"
+                                + "{\"ignored\", \"C\", \"D\", "
+                                + "\"unused\"})\n"
+                                + "                .append();\n"
+                                + "        if (store.size() != 4) {\n"
+                                + "            throw new AssertionError("
+                                + "\"unexpected size\");\n"
+                                + "        }\n"
+                                + "        store.seal();\n"
+                                + "        if (store.viewAt(0).quantity() "
+                                + "!= 10\n"
+                                + "                || !\"A\".equals("
+                                + "store.viewAt(0).symbol())\n"
+                                + "                || store.viewAt(3)."
+                                + "quantity() != 40\n"
+                                + "                || !\"D\".equals("
+                                + "store.viewAt(3).symbol())) {\n"
+                                + "            throw new AssertionError("
+                                + "\"unexpected rows\");\n"
+                                + "        }\n"
+                                + "    }\n"
+                                + "}\n"));
+
+        assertSucceeded(second);
+        String contract = generatedStoreSource(
+                second, "example.EvolvedProjection");
+        String implementation = generatedSource(
+                second, "example.EvolvedProjection");
+        assertTrue(contract.contains(
+                "Batch symbol(java.lang.String[] source)"), contract);
+        assertTrue(implementation.contains(
+                "public java.lang.String symbol()"), implementation);
+        invokeVerificationMethod(
+                second.classOutput,
+                "example.EvolvedProjectionConsumer");
+    }
+
+    @Test
+    void generatedContractFactoryRejectsStaleImplementationAtRuntime()
+            throws Exception {
+        Compilation current = compileWithProcessor(
+                "example.StaleProjection",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "public interface StaleProjection {\n"
+                        + "    int value();\n"
+                        + "}\n");
+        assertSucceeded(current);
+
+        Compilation stale = compileWithoutProcessor(
+                Collections.singletonList(current.classOutput),
+                new StringSource(
+                        "example.StaleProjection"
+                                + "__ColumnarProjectionStore",
+                        "package example;\n"
+                                + "public final class StaleProjection"
+                                + "__ColumnarProjectionStore implements\n"
+                                + "        io.github.jutil.columnarprojection."
+                                + "ProjectionStore<StaleProjection> {\n"
+                                + "    public StaleProjection"
+                                + "__ColumnarProjectionStore(\n"
+                                + "            int expectedSize) { }\n"
+                                + "    public void add(StaleProjection value)"
+                                + " { }\n"
+                                + "    public int size() { return 0; }\n"
+                                + "    public void seal() { }\n"
+                                + "    public io.github.jutil."
+                                + "columnarprojection.ProjectionCursor<\n"
+                                + "            StaleProjection> cursor() {\n"
+                                + "        return null;\n"
+                                + "    }\n"
+                                + "    public StaleProjection viewAt(int index)"
+                                + " {\n"
+                                + "        return null;\n"
+                                + "    }\n"
+                                + "}\n"));
+        assertSucceeded(stale);
+
+        URL[] classPath = new URL[] {
+            stale.classOutput.toUri().toURL(),
+            current.classOutput.toUri().toURL()
+        };
+        try (URLClassLoader loader = new URLClassLoader(
+                classPath,
+                ProjectionSchemaProcessorCompilationTest.class
+                        .getClassLoader())) {
+            Class<?> contract = Class.forName(
+                    "example.StaleProjectionStore", true, loader);
+            Class<?> implementation = Class.forName(
+                    "example.StaleProjection__ColumnarProjectionStore",
+                    true,
+                    loader);
+            assertTrue(io.github.jutil.columnarprojection.ProjectionStore.class
+                    .isAssignableFrom(implementation));
+            assertFalse(contract.isAssignableFrom(implementation));
+
+            Method create = contract.getMethod("create", Integer.TYPE);
+            InvocationTargetException thrown = assertThrows(
+                    InvocationTargetException.class,
+                    () -> create.invoke(null, 0));
+            IllegalStateException cause = assertInstanceOf(
+                    IllegalStateException.class, thrown.getCause());
+            assertEquals(
+                    "Generated store for example.StaleProjection does not "
+                            + "implement example.StaleProjectionStore; clean "
+                            + "and recompile using the current annotation "
+                            + "processor",
+                    cause.getMessage());
+        }
     }
 
     @Test
@@ -512,6 +723,163 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "Generated type name collision: example."
                         + "ImplementationCollision__ColumnarProjectionStore "
                         + "is already declared");
+    }
+
+    @Test
+    void rejectsExternalUserDeclaredGeneratedStoreContractName()
+            throws IOException {
+        Compilation external = compileWithoutProcessor(
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.ExternalContractCollisionStore",
+                        "package example;\n"
+                                + "public interface "
+                                + "ExternalContractCollisionStore { }\n"));
+        assertSucceeded(external);
+
+        Compilation compilation = compileWithProcessor(
+                Collections.singletonList(external.classOutput),
+                new StringSource(
+                        "example.ExternalContractCollision",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface "
+                                + "ExternalContractCollision {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(compilation,
+                "Generated type name collision: example."
+                        + "ExternalContractCollisionStore is already declared "
+                        + "by example.ExternalContractCollisionStore");
+    }
+
+    @Test
+    void rejectsExternalUserDeclaredGeneratedImplementationName()
+            throws IOException {
+        Compilation external = compileWithoutProcessor(
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.ExternalImplementationCollision"
+                                + "__ColumnarProjectionStore",
+                        "package example;\n"
+                                + "public final class "
+                                + "ExternalImplementationCollision"
+                                + "__ColumnarProjectionStore { }\n"));
+        assertSucceeded(external);
+
+        Compilation compilation = compileWithProcessor(
+                Collections.singletonList(external.classOutput),
+                new StringSource(
+                        "example.ExternalImplementationCollision",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface "
+                                + "ExternalImplementationCollision {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(compilation,
+                "Generated type name collision: example."
+                        + "ExternalImplementationCollision"
+                        + "__ColumnarProjectionStore is already declared by "
+                        + "example.ExternalImplementationCollision"
+                        + "__ColumnarProjectionStore");
+    }
+
+    @Test
+    void rejectsExternalImplementationWithMismatchedForgedProvenance()
+            throws IOException {
+        Compilation external = compileWithoutProcessor(
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.ForgedProjection"
+                                + "__ColumnarProjectionStore",
+                        "package example;\n"
+                                + "@ForgedProjection"
+                                + "__ColumnarProjectionStore."
+                                + "GeneratedProvenance(\n"
+                                + "        generator = \"io.github.jutil."
+                                + "columnarprojection.processor."
+                                + "ProjectionSchemaProcessor:1\",\n"
+                                + "        schema = "
+                                + "\"example.ForgedProjection\",\n"
+                                + "        store = "
+                                + "\"example.WrongProjectionStore\",\n"
+                                + "        implementation = \"example."
+                                + "ForgedProjection"
+                                + "__ColumnarProjectionStore\",\n"
+                                + "        role = \"implementation\")\n"
+                                + "public final class ForgedProjection"
+                                + "__ColumnarProjectionStore {\n"
+                                + "    @java.lang.annotation.Retention(\n"
+                                + "            java.lang.annotation."
+                                + "RetentionPolicy.CLASS)\n"
+                                + "    @java.lang.annotation.Target(\n"
+                                + "            java.lang.annotation."
+                                + "ElementType.TYPE)\n"
+                                + "    @interface GeneratedProvenance {\n"
+                                + "        String generator();\n"
+                                + "        String schema();\n"
+                                + "        String store();\n"
+                                + "        String implementation();\n"
+                                + "        String role();\n"
+                                + "    }\n"
+                                + "}\n"));
+        assertSucceeded(external);
+
+        Compilation compilation = compileWithProcessor(
+                Collections.singletonList(external.classOutput),
+                new StringSource(
+                        "example.ForgedProjection",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface ForgedProjection {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(compilation,
+                "Generated type name collision: example.ForgedProjection"
+                        + "__ColumnarProjectionStore is already declared by "
+                        + "example.ForgedProjection"
+                        + "__ColumnarProjectionStore");
+    }
+
+    @Test
+    void rejectsExternalMemberTypeWithGeneratedContractBinaryName()
+            throws IOException {
+        Compilation external = compileWithoutProcessor(
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.Outer",
+                        "package example;\n"
+                                + "public final class Outer {\n"
+                                + "    public interface ProjectionStore { }\n"
+                                + "}\n"));
+        assertSucceeded(external);
+
+        Compilation compilation = compileWithProcessor(
+                Collections.singletonList(external.classOutput),
+                new StringSource(
+                        "example.Outer$Projection",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Outer$Projection {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(compilation,
+                "Generated type name collision: "
+                        + "example.Outer$ProjectionStore is already declared "
+                        + "by example.Outer.ProjectionStore");
     }
 
     @Test
@@ -617,6 +985,242 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "Batch value(SchemaStore.Value[] source)"), contract);
         assertTrue(implementation.contains(
                 "implements example.SchemaStore_"), implementation);
+    }
+
+    @Test
+    void packageNamedLikeStoreContractSelectsUnderscore()
+            throws IOException {
+        Compilation packageCompilation = compileWithoutProcessor(
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.SchemaStore.Marker",
+                        "package example.SchemaStore;\n"
+                                + "public final class Marker { }\n"));
+        assertSucceeded(packageCompilation);
+
+        Compilation compilation = compileWithProcessor(
+                Collections.singletonList(packageCompilation.classOutput),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSourceWithName(
+                compilation, "example.SchemaStore_");
+        String implementation = generatedSource(
+                compilation, "example.Schema");
+        assertTrue(contract.contains("public interface SchemaStore_"),
+                contract);
+        assertTrue(implementation.contains(
+                "public final class Schema__ColumnarProjectionStore"),
+                implementation);
+        assertTrue(implementation.contains(
+                "implements example.SchemaStore_"), implementation);
+    }
+
+    @Test
+    void multiplePackagesNamedLikeStoreContractExtendUnderscoreChain()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "example.SchemaStore.Marker",
+                        "package example.SchemaStore;\n"
+                                + "public final class Marker { }\n"),
+                new StringSource(
+                        "example.SchemaStore_.Marker",
+                        "package example.SchemaStore_;\n"
+                                + "public final class Marker { }\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSourceWithName(
+                compilation, "example.SchemaStore__");
+        String implementation = generatedSource(
+                compilation, "example.Schema");
+        assertTrue(contract.contains("public interface SchemaStore__"),
+                contract);
+        assertTrue(implementation.contains(
+                "public final class Schema__ColumnarProjectionStore"),
+                implementation);
+        assertTrue(implementation.contains(
+                "implements example.SchemaStore__"), implementation);
+    }
+
+    @Test
+    void laterRequiredSourceRootExtendsStoreContractUnderscoreChain()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "example.SchemaStore.Marker",
+                        "package example.SchemaStore;\n"
+                                + "public final class Marker { }\n"),
+                new StringSource(
+                        "SchemaStore_.Value",
+                        "package SchemaStore_;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    SchemaStore_.Value value();\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSourceWithName(
+                compilation, "example.SchemaStore__");
+        String implementation = generatedSource(
+                compilation, "example.Schema");
+        assertTrue(contract.contains("public interface SchemaStore__"),
+                contract);
+        assertTrue(contract.contains(
+                "Batch value(SchemaStore_.Value[] source)"), contract);
+        assertTrue(implementation.contains(
+                "implements example.SchemaStore__"), implementation);
+    }
+
+    @Test
+    void recompilesStoreContractSelectedForRequiredSourceRoot()
+            throws IOException {
+        String rootSource = "package SchemaStore;\n"
+                + "public final class Value { }\n";
+        String schemaSource = "package example;\n"
+                + "import io.github.jutil.columnarprojection."
+                + "ProjectionSchema;\n"
+                + "@ProjectionSchema\n"
+                + "public interface Schema {\n"
+                + "    SchemaStore.Value value();\n"
+                + "}\n";
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "required-root-recompilation");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource("SchemaStore.Value", rootSource),
+                new StringSource("example.Schema", schemaSource));
+
+        assertSucceeded(first);
+        String firstContract = generatedStoreSourceWithName(
+                first, "example.SchemaStore_");
+
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource("SchemaStore.Value", rootSource),
+                new StringSource("example.Schema", schemaSource));
+
+        assertSucceeded(second);
+        assertEquals(firstContract, generatedStoreSourceWithName(
+                second, "example.SchemaStore_"));
+        assertTrue(generatedSource(second, "example.Schema").contains(
+                "implements example.SchemaStore_"));
+    }
+
+    @Test
+    void changedStoreContractNameRequiresCleanRebuild()
+            throws IOException {
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "changed-store-name");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertSucceeded(first);
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource(
+                        "SchemaStore.Value",
+                        "package SchemaStore;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    SchemaStore.Value category();\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(second,
+                "Generated store contract name changed for projection schema "
+                        + "example.Schema from example.SchemaStore to "
+                        + "example.SchemaStore_");
+        assertFailedWith(second,
+                "Clean the compilation output and recompile");
+    }
+
+    @Test
+    void wildcardBoundChangingStoreContractNameRequiresCleanRebuild()
+            throws IOException {
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "wildcard-changed-store-name");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertSucceeded(first);
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource(
+                        "SchemaStore.Value",
+                        "package SchemaStore;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    java.util.List<? extends "
+                                + "SchemaStore.Value> values();\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(second,
+                "Generated store contract name changed for projection schema "
+                        + "example.Schema from example.SchemaStore to "
+                        + "example.SchemaStore_");
+        assertFailedWith(second,
+                "Clean the compilation output and recompile");
     }
 
     @Test
@@ -1301,38 +1905,76 @@ final class ProjectionSchemaProcessorCompilationTest {
 
     private Compilation compileWithProcessor(
             String className, String source) throws IOException {
-        return compile(className, source, true);
+        return compile(className, source, ProcessorMode.EXPLICIT);
     }
 
     private Compilation compileWithProcessor(StringSource... sources)
             throws IOException {
-        return compile(Arrays.asList(sources), true);
+        return compile(
+                Arrays.asList(sources),
+                ProcessorMode.EXPLICIT,
+                Files.createTempDirectory(temporaryDirectory, "compiler-"),
+                Collections.<Path>emptyList());
+    }
+
+    private Compilation compileWithProcessor(
+            List<Path> additionalClassPath,
+            StringSource... sources) throws IOException {
+        return compile(
+                Arrays.asList(sources),
+                ProcessorMode.EXPLICIT,
+                Files.createTempDirectory(temporaryDirectory, "compiler-"),
+                additionalClassPath);
+    }
+
+    private Compilation compileWithProcessor(
+            Path compilationDirectory,
+            List<Path> additionalClassPath,
+            StringSource... sources) throws IOException {
+        return compile(
+                Arrays.asList(sources),
+                ProcessorMode.EXPLICIT,
+                compilationDirectory,
+                additionalClassPath);
+    }
+
+    private Compilation compileWithoutProcessor(
+            List<Path> additionalClassPath,
+            StringSource... sources) throws IOException {
+        return compile(
+                Arrays.asList(sources),
+                ProcessorMode.DISABLED,
+                Files.createTempDirectory(temporaryDirectory, "compiler-"),
+                additionalClassPath);
     }
 
     private Compilation compileUsingServiceDiscovery(
             String className, String source) throws IOException {
-        return compile(className, source, false);
+        return compile(className, source, ProcessorMode.SERVICE_DISCOVERY);
     }
 
     private Compilation compile(
             String className,
             String source,
-            boolean installProcessorExplicitly) throws IOException {
+            ProcessorMode processorMode) throws IOException {
         return compile(
                 Collections.singletonList(
                         new StringSource(className, source)),
-                installProcessorExplicitly);
+                processorMode,
+                Files.createTempDirectory(temporaryDirectory, "compiler-"),
+                Collections.<Path>emptyList());
     }
 
     private Compilation compile(
             Iterable<? extends JavaFileObject> compilationUnits,
-            boolean installProcessorExplicitly) throws IOException {
+            ProcessorMode processorMode,
+            Path compilationDirectory,
+            List<Path> additionalClassPath) throws IOException {
         JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
         assertTrue(compiler != null,
                 "Tests must run on a JDK with the system Java compiler");
 
-        Path compilationDirectory = Files.createTempDirectory(
-                temporaryDirectory, "compiler-");
+        Files.createDirectories(compilationDirectory);
         Path classOutput = Files.createDirectories(
                 compilationDirectory.resolve("classes"));
         Path generatedSourceOutput = Files.createDirectories(
@@ -1344,15 +1986,17 @@ final class ProjectionSchemaProcessorCompilationTest {
         boolean succeeded;
         try {
             List<String> options = new ArrayList<String>(Arrays.asList(
-                    "-classpath", System.getProperty("java.class.path"),
+                    "-classpath", classPath(additionalClassPath),
                     "-d", classOutput.toString(),
                     "-s", generatedSourceOutput.toString(),
                     "-source", "8",
                     "-target", "8",
                     "-Xlint:-options"));
-            if (!installProcessorExplicitly) {
+            if (processorMode == ProcessorMode.SERVICE_DISCOVERY) {
                 options.add("-processorpath");
                 options.add(System.getProperty("java.class.path"));
+            } else if (processorMode == ProcessorMode.DISABLED) {
+                options.add("-proc:none");
             }
             JavaCompiler.CompilationTask task = compiler.getTask(
                     null,
@@ -1361,7 +2005,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                     options,
                     null,
                     compilationUnits);
-            if (installProcessorExplicitly) {
+            if (processorMode == ProcessorMode.EXPLICIT) {
                 task.setProcessors(Collections.singletonList(
                         new ProjectionSchemaProcessor()));
             }
@@ -1371,8 +2015,31 @@ final class ProjectionSchemaProcessorCompilationTest {
         }
         return new Compilation(
                 succeeded,
+                classOutput,
                 generatedSourceOutput,
                 diagnostics.getDiagnostics());
+    }
+
+    private static String classPath(List<Path> additionalClassPath) {
+        StringBuilder classPath = new StringBuilder(
+                System.getProperty("java.class.path"));
+        for (Path path : additionalClassPath) {
+            classPath.append(File.pathSeparatorChar).append(path);
+        }
+        return classPath.toString();
+    }
+
+    private static void invokeVerificationMethod(
+            Path classOutput, String className) throws Exception {
+        URL[] classPath = new URL[] {classOutput.toUri().toURL()};
+        try (URLClassLoader loader = new URLClassLoader(
+                classPath,
+                ProjectionSchemaProcessorCompilationTest.class
+                        .getClassLoader())) {
+            Class<?> verificationClass = Class.forName(
+                    className, true, loader);
+            verificationClass.getMethod("verify").invoke(null);
+        }
     }
 
     private static void assertSucceeded(Compilation compilation) {
@@ -1474,14 +2141,17 @@ final class ProjectionSchemaProcessorCompilationTest {
 
     private static final class Compilation {
         private final boolean succeeded;
+        private final Path classOutput;
         private final Path generatedSourceOutput;
         private final List<Diagnostic<? extends JavaFileObject>> diagnostics;
 
         private Compilation(
                 boolean succeeded,
+                Path classOutput,
                 Path generatedSourceOutput,
                 List<Diagnostic<? extends JavaFileObject>> diagnostics) {
             this.succeeded = succeeded;
+            this.classOutput = classOutput;
             this.generatedSourceOutput = generatedSourceOutput;
             this.diagnostics = diagnostics;
         }
@@ -1497,6 +2167,12 @@ final class ProjectionSchemaProcessorCompilationTest {
             }
             return text.toString();
         }
+    }
+
+    private enum ProcessorMode {
+        EXPLICIT,
+        SERVICE_DISCOVERY,
+        DISABLED
     }
 
     private static final class StringSource extends SimpleJavaFileObject {
