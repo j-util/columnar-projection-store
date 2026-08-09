@@ -11,9 +11,10 @@ Primitive-valued columns use primitive arrays. Reference-valued columns use
 arrays of the accessors' erased return types and keep references, including
 `null`; referenced objects are not copied or flattened. The runtime
 abstractions and factory live in `io.github.jutil.columnarprojection`. The
-processor generates the supported concrete store constructor and typed batch
-API into the schema package; all other generated implementation details are
-unsupported. The library has no runtime dependencies and targets Java 8.
+processor generates a public schema-specific `<Projection>Store` contract and
+the supported concrete store constructor into the schema package; all other
+generated implementation details are unsupported. The library has no runtime
+dependencies and targets Java 8.
 
 ## Status and installation
 
@@ -146,38 +147,52 @@ public final class OrderExample {
 }
 ```
 
-For row-oriented use, prefer `ProjectionStores.create`. The generated concrete
-store's public constructor and its generated `batch` method and returned batch
-type form the supported type-safe batch API in the schema package. Runtime
+For schema-specific use, prefer the generated `<Projection>Store` interface.
+Its static `create(int)` method delegates construction to
+`ProjectionStores.create`, while exposing the generated typed batch contract.
+`ProjectionStores.create(Projection.class, ...)` remains the entry point for
+schema-agnostic and row-oriented code and returns the common
+`ProjectionStore<T>` contract, whose static type does not expose
+schema-specific batch setters. Using `var` does not change that: local-variable
+type inference uses the declared factory return type and cannot derive a
+generated interface from `Class<T>`.
+
+The generated concrete store's public constructor remains compatible for
+direct construction, but it is no longer necessary for typed batching. Runtime
 abstractions remain in `io.github.jutil.columnarprojection`. Other generated
-implementation details, such as backing fields and view classes, are not
-supported API.
+implementation details, such as backing fields, private batch implementations,
+and view classes, are not supported API.
 
 ## Typed batch append
 
-For a top-level projection named `PriceProjection`, the processor generates
-`PriceProjection__ColumnarProjectionStore`. Its store-specific batch accepts
-exactly the array type corresponding to each projection accessor. Whole-array
-mode copies every element:
+For a top-level projection named `PriceProjection`, the processor generates the
+public `PriceProjectionStore` contract and the compatible concrete
+`PriceProjection__ColumnarProjectionStore`. The contract's store-specific batch
+accepts exactly the array type corresponding to each projection accessor.
+Whole-array mode copies every element:
 
 ```java
-PriceProjection__ColumnarProjectionStore store =
-        new PriceProjection__ColumnarProjectionStore(expectedSize);
+@ProjectionSchema
+public interface PriceProjection {
+    double price();
 
-store.batch()
-        .timestamp(timestamps)
-        .symbol(symbols)
-        .lastTradePrice(prices)
+    String symbol();
+}
+
+PriceProjectionStore prices = PriceProjectionStore.create(expectedSize);
+
+prices.batch()
+        .price(new double[] {15.1, 25.2})
+        .symbol(new String[] {"A", "B"})
         .append();
 ```
 
 Common-range mode applies one half-open source range to every column:
 
 ```java
-store.batch(sourceFromIndex, sourceToIndex)
-        .timestamp(timestamps)
+prices.batch(sourceFromIndex, sourceToIndex)
+        .price(priceValues)
         .symbol(symbols)
-        .lastTradePrice(prices)
         .append();
 ```
 
@@ -192,6 +207,13 @@ the processor chooses a deterministic collision-safe name by appending
 underscores. This covers named-package roots and unnamed-package top-level
 types. Chained use through either `batch` factory, as above, does not require
 callers to spell the nested type name.
+
+The generated store contract is ordinarily named `<Projection>Store`. The same
+deterministic underscore rule applies only when that name would shadow a source
+type root needed by the contract. If the resulting generated contract or
+concrete implementation name is already declared by user code, compilation
+fails with a generated-name collision diagnostic; the processor never
+overwrites or silently skips the type.
 
 For a parameterized accessor, a batch column preserves the resolved declared
 return type whenever every part of that type can legally be named from the
@@ -385,8 +407,8 @@ make mutable referenced objects immutable or thread-safe.
   storage fallback.
 - Runtime abstractions are supported only in
   `io.github.jutil.columnarprojection`. In each schema package, the generated
-  concrete store constructor and typed batch API are also supported; all other
-  generated implementation details are unsupported.
+  `<Projection>Store` contract and concrete store constructor are also
+  supported; all other generated implementation details are unsupported.
 - V1 makes no explicit JPMS or native-image compatibility guarantee.
 - Query planning, indexing, filtering, aggregation, schema migration, and
   durability are outside the V1 scope.

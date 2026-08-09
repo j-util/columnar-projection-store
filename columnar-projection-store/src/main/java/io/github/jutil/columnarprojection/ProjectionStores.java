@@ -10,10 +10,16 @@ import java.util.Objects;
  * <p>The runtime abstractions and this factory live in
  * {@code io.github.jutil.columnarprojection}. The implementation for a
  * projection schema is generated into the schema package when that schema is
- * compiled. Applications normally use this factory for row-oriented access.
- * The generated concrete store's public constructor and typed batch API are
- * also supported API; all other generated implementation details are
- * unsupported.
+ * compiled. Each schema also receives a public schema-specific interface named
+ * {@code <Projection>Store}; its static {@code create(int)} method delegates
+ * to this factory and is the recommended entry point for typed batching.
+ *
+ * <p>This factory returns the common {@link ProjectionStore} contract for
+ * schema-agnostic and row-oriented code. Its declared return type cannot expose
+ * generated schema-specific batch setters; local-variable type inference
+ * ({@code var}) uses that declared return type as well. Direct construction
+ * through a generated concrete store's public constructor remains supported.
+ * All other generated implementation details are unsupported.
  */
 public final class ProjectionStores {
 
@@ -28,6 +34,10 @@ public final class ProjectionStores {
      *
      * <p>{@code expectedSize} is an initial-capacity hint, not a row limit. A
      * store grows as needed while it is in its building state.
+     * The returned static type is the common row-oriented contract and does
+     * not declare schema-specific batch methods. Use the generated
+     * {@code <Projection>Store.create(int)} entry point when typed column
+     * setters are required.
      *
      * @param projectionType the projection schema interface
      * @param expectedSize the expected number of rows, or zero when unknown

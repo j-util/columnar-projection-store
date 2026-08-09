@@ -24,12 +24,28 @@ class BatchAppendRuntimeTest {
             throws Exception {
         Class<BatchProjection__ColumnarProjectionStore> storeType =
                 BatchProjection__ColumnarProjectionStore.class;
-        Class<?> batchType =
-                BatchProjection__ColumnarProjectionStore.Batch.class;
+        Class<?> storeContract = BatchProjectionStore.class;
+        Class<?> batchType = BatchProjectionStore.Batch.class;
 
         assertTrue(Modifier.isPublic(batchType.getModifiers()));
-        assertTrue(Modifier.isFinal(batchType.getModifiers()));
-        Constructor<?>[] constructors = batchType.getDeclaredConstructors();
+        assertTrue(batchType.isInterface());
+        assertTrue(storeContract.isAssignableFrom(storeType));
+
+        Class<?> batchImplementationType = null;
+        for (Class<?> nestedType : storeType.getDeclaredClasses()) {
+            if (batchType.isAssignableFrom(nestedType)) {
+                batchImplementationType = nestedType;
+            }
+        }
+        assertTrue(batchImplementationType != null);
+        assertTrue(Modifier.isPrivate(
+                batchImplementationType.getModifiers()));
+        assertTrue(Modifier.isFinal(batchImplementationType.getModifiers()));
+        assertEquals(1, batchImplementationType.getInterfaces().length);
+        assertSame(batchType, batchImplementationType.getInterfaces()[0]);
+
+        Constructor<?>[] constructors =
+                batchImplementationType.getDeclaredConstructors();
         boolean hasPrivateConstructor = false;
         for (Constructor<?> constructor : constructors) {
             assertFalse(Modifier.isPublic(constructor.getModifiers()));
@@ -54,6 +70,14 @@ class BatchAppendRuntimeTest {
         assertThrows(NoSuchMethodException.class, () -> batchType.getMethod(
                 "quantity", int[].class, Integer.TYPE));
         assertSame(Void.TYPE, batchType.getMethod("append").getReturnType());
+        for (Method method : batchImplementationType.getDeclaredMethods()) {
+            assertFalse(method.isBridge(), method.toString());
+            if (method.getName().equals("quantity")
+                    || method.getName().equals("symbol")
+                    || method.getName().equals("payload")) {
+                assertSame(batchType, method.getReturnType());
+            }
+        }
 
         int generatedBatchMethods = 0;
         for (Method method : storeType.getMethods()) {
@@ -102,7 +126,7 @@ class BatchAppendRuntimeTest {
     void unequalWholeArrayLengthsLeaveColumnsAvailableForCorrection() {
         BatchProjection__ColumnarProjectionStore store =
                 new BatchProjection__ColumnarProjectionStore(0);
-        BatchProjection__ColumnarProjectionStore.Batch batch = store.batch();
+        BatchProjectionStore.Batch batch = store.batch();
 
         assertThrows(NullPointerException.class,
                 () -> batch.quantity(null));
@@ -131,7 +155,7 @@ class BatchAppendRuntimeTest {
             throws Exception {
         BatchProjection__ColumnarProjectionStore store =
                 new BatchProjection__ColumnarProjectionStore(1);
-        BatchProjection__ColumnarProjectionStore.Batch batch = store.batch();
+        BatchProjectionStore.Batch batch = store.batch();
 
         assertThrows(IllegalStateException.class, batch::append);
         assertEquals(0, store.size());
@@ -154,7 +178,7 @@ class BatchAppendRuntimeTest {
     void emptyWholeArraysRequireEveryColumn() {
         BatchProjection__ColumnarProjectionStore store =
                 new BatchProjection__ColumnarProjectionStore(0);
-        BatchProjection__ColumnarProjectionStore.Batch empty = store.batch();
+        BatchProjectionStore.Batch empty = store.batch();
 
         empty.payload(new byte[0][]);
         assertThrows(IllegalArgumentException.class,
@@ -218,7 +242,7 @@ class BatchAppendRuntimeTest {
         assertThrows(IndexOutOfBoundsException.class,
                 () -> store.batch(0, -1));
 
-        BatchProjection__ColumnarProjectionStore.Batch batch =
+        BatchProjectionStore.Batch batch =
                 store.batch(1, 3);
         assertThrows(NullPointerException.class,
                 () -> batch.quantity(null));
@@ -253,7 +277,7 @@ class BatchAppendRuntimeTest {
     void emptyExplicitRangesNeedNoColumnsAndAreOneShot() {
         BatchProjection__ColumnarProjectionStore store =
                 new BatchProjection__ColumnarProjectionStore(0);
-        BatchProjection__ColumnarProjectionStore.Batch empty =
+        BatchProjectionStore.Batch empty =
                 store.batch(4, 4);
 
         assertThrows(IndexOutOfBoundsException.class,
@@ -278,11 +302,11 @@ class BatchAppendRuntimeTest {
         byte[] laterSecondPayload = new byte[] {3};
         byte[] addedPayload = new byte[] {35};
 
-        BatchProjection__ColumnarProjectionStore.Batch early = store.batch()
+        BatchProjectionStore.Batch early = store.batch()
                 .quantity(new int[] {40})
                 .symbol(new String[] {"early"})
                 .payload(new byte[][] {earlyPayload});
-        BatchProjection__ColumnarProjectionStore.Batch later =
+        BatchProjectionStore.Batch later =
                 store.batch(1, 3)
                         .quantity(new int[] {10, 20, 30, 99})
                         .symbol(new String[] {
@@ -317,7 +341,7 @@ class BatchAppendRuntimeTest {
         byte[] originalPayload = new byte[] {1};
         byte[] replacementPayload = new byte[] {2};
         byte[][] payloads = new byte[][] {originalPayload, null};
-        BatchProjection__ColumnarProjectionStore.Batch batch = store.batch()
+        BatchProjectionStore.Batch batch = store.batch()
                 .quantity(quantities)
                 .symbol(symbols)
                 .payload(payloads);
@@ -453,7 +477,7 @@ class BatchAppendRuntimeTest {
                 new BatchProjection__ColumnarProjectionStore(2);
         byte[] existingPayload = new byte[] {1};
         store.add(batchProjection(1, "existing", existingPayload));
-        BatchProjection__ColumnarProjectionStore.Batch batch = store.batch()
+        BatchProjectionStore.Batch batch = store.batch()
                 .quantity(new int[] {2})
                 .symbol(new String[] {"not-copied"})
                 .payload(new byte[][] {new byte[] {2}});

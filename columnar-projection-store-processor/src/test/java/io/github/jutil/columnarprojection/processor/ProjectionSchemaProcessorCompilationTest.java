@@ -29,6 +29,7 @@ final class ProjectionSchemaProcessorCompilationTest {
 
     private static final String GENERATED_SUFFIX =
             "__ColumnarProjectionStore";
+    private static final String GENERATED_STORE_SUFFIX = "Store";
 
     @TempDir
     Path temporaryDirectory;
@@ -292,43 +293,59 @@ final class ProjectionSchemaProcessorCompilationTest {
 
         assertSucceeded(compilation);
         String generated = generatedSource(compilation, "example.BatchSchema");
-        int batchStart = generated.indexOf("public final class Batch");
+        String contract = generatedStoreSource(
+                compilation, "example.BatchSchema");
+        int batchStart = generated.indexOf(
+                "private final class BatchImplementation");
         int batchEnd = generated.indexOf(
                 "private final class ProjectionView", batchStart);
         assertTrue(batchStart >= 0, generated);
         assertTrue(batchEnd > batchStart, generated);
         String batch = generated.substring(batchStart, batchEnd);
-        assertEquals(1, countOccurrences(batch,
-                "Generated batch signatures preserve source-nameable Java "
-                        + "type structure and generic arguments but "
-                        + "intentionally omit type-use annotations; the "
-                        + "projection interface remains authoritative for "
-                        + "those annotations."), batch);
+        assertEquals(1, countOccurrences(contract,
+                "intentionally omitting type-use annotations; the projection "
+                        + "interface remains authoritative for those "
+                        + "annotations."), contract);
 
-        assertTrue(generated.contains("public Batch batch()"), generated);
+        assertTrue(contract.contains("Batch batch()"), contract);
+        assertTrue(contract.contains(
+                "Batch batch(int sourceFromIndex, int sourceToIndex)"),
+                contract);
+        assertTrue(contract.contains("interface Batch"), contract);
         assertTrue(generated.contains(
-                "public Batch batch(int sourceFromIndex, "
-                        + "int sourceToIndex)"),
+                "public example.BatchSchemaStore.Batch batch()"), generated);
+        assertTrue(generated.contains(
+                "public example.BatchSchemaStore.Batch batch("
+                        + "int sourceFromIndex, int sourceToIndex)"),
                 generated);
         assertFalse(generated.contains("batch(int rowCount)"), generated);
-        assertTrue(batch.contains("private Batch()"), batch);
+        assertTrue(batch.contains("private BatchImplementation()"), batch);
         assertTrue(batch.contains(
-                "private Batch(int sourceFromIndex, int sourceToIndex)"),
+                "private BatchImplementation("
+                        + "int sourceFromIndex, int sourceToIndex)"),
                 batch);
-        assertFalse(batch.contains("public Batch("), batch);
         assertTrue(batch.contains(
-                "public Batch count(int[] source)"), batch);
+                "implements example.BatchSchemaStore.Batch"), batch);
+        assertTrue(batch.contains(
+                "public example.BatchSchemaStore.Batch "
+                        + "count(int[] source)"), batch);
         assertTrue(batch.contains(
                 "private java.util.List<java.lang.String>[] source1;"),
                 batch);
         assertTrue(batch.contains(
-                "public Batch labels(java.util.List<java.lang.String>[] "
-                        + "source)"), batch);
+                "public example.BatchSchemaStore.Batch labels("
+                        + "java.util.List<java.lang.String>[] source)"), batch);
         assertTrue(batch.contains(
-                "public Batch payload(byte[][] source)"),
+                "public example.BatchSchemaStore.Batch "
+                        + "payload(byte[][] source)"),
                 batch);
         assertTrue(batch.contains(
-                "public Batch symbol(java.lang.String[] source)"), batch);
+                "public example.BatchSchemaStore.Batch "
+                        + "symbol(java.lang.String[] source)"), batch);
+        assertTrue(contract.contains("Batch count(int[] source)"), contract);
+        assertTrue(contract.contains(
+                "Batch labels(java.util.List<java.lang.String>[] source)"),
+                contract);
         assertTrue(batch.contains("public void append()"), batch);
         assertTrue(batch.contains("source.length != rowCount"), batch);
         assertTrue(batch.contains("source.length < sourceToIndex"), batch);
@@ -386,6 +403,223 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
+    void generatedStoreContractIsAJava8TypedConsumerBoundary()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.PriceProjection",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection.*;\n"
+                        + "@ProjectionSchema\n"
+                        + "public interface PriceProjection {\n"
+                        + "    double price();\n"
+                        + "    String symbol();\n"
+                        + "}\n"
+                        + "final class PriceConsumer {\n"
+                        + "    void use() {\n"
+                        + "        PriceProjectionStore prices = "
+                        + "PriceProjectionStore.create(2);\n"
+                        + "        prices.batch()\n"
+                        + "                .price(new double[]{15.1, 25.2})\n"
+                        + "                .symbol(new String[]{\"A\", \"B\"})\n"
+                        + "                .append();\n"
+                        + "        prices.batch(0, 1)\n"
+                        + "                .price(new double[]{35.3})\n"
+                        + "                .symbol(new String[]{\"C\"})\n"
+                        + "                .append();\n"
+                        + "        prices.add(new PriceProjection() {\n"
+                        + "            public double price() { return 45.4; }\n"
+                        + "            public String symbol() { return \"D\"; }\n"
+                        + "        });\n"
+                        + "        ProjectionStore<PriceProjection> common = "
+                        + "prices;\n"
+                        + "        prices.seal();\n"
+                        + "        prices.cursor();\n"
+                        + "        prices.viewAt(0);\n"
+                        + "        ProjectionStores.create("
+                        + "PriceProjection.class, 1);\n"
+                        + "        new PriceProjection"
+                        + "__ColumnarProjectionStore(1);\n"
+                        + "    }\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSource(
+                compilation, "example.PriceProjection");
+        String implementation = generatedSource(
+                compilation, "example.PriceProjection");
+        assertTrue(contract.contains(
+                "public interface PriceProjectionStore"), contract);
+        assertTrue(contract.contains(
+                "extends io.github.jutil.columnarprojection."
+                        + "ProjectionStore<example.PriceProjection>"),
+                contract);
+        assertTrue(contract.contains(
+                "static PriceProjectionStore create(int expectedSize)"),
+                contract);
+        assertTrue(contract.contains(
+                "ProjectionStores.create("), contract);
+        assertTrue(contract.contains(
+                "example.PriceProjection.class, expectedSize"), contract);
+        assertTrue(contract.contains(
+                "PriceProjectionStore.class.isInstance(store)"), contract);
+        assertTrue(contract.contains(
+                "PriceProjectionStore.class.cast(store)"), contract);
+        assertTrue(contract.contains(
+                "clean and recompile using the current"), contract);
+        assertFalse(contract.contains(
+                "PriceProjection__ColumnarProjectionStore"), contract);
+        assertFalse(contract.contains("@java.lang.SuppressWarnings"), contract);
+        assertFalse(contract.contains("(PriceProjectionStore)"), contract);
+        assertTrue(implementation.contains(
+                "implements example.PriceProjectionStore"), implementation);
+        assertTrue(implementation.contains(
+                "private final class BatchImplementation implements "
+                        + "example.PriceProjectionStore.Batch"),
+                implementation);
+    }
+
+    @Test
+    void rejectsUserDeclaredGeneratedStoreContractName()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.ContractCollision",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "interface ContractCollision { int value(); }\n"
+                        + "interface ContractCollisionStore { }\n");
+
+        assertFailedWith(compilation,
+                "Generated type name collision: "
+                        + "example.ContractCollisionStore is already declared");
+    }
+
+    @Test
+    void rejectsUserDeclaredGeneratedImplementationName()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.ImplementationCollision",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "interface ImplementationCollision { int value(); }\n"
+                        + "final class ImplementationCollision"
+                        + "__ColumnarProjectionStore { }\n");
+
+        assertFailedWith(compilation,
+                "Generated type name collision: example."
+                        + "ImplementationCollision__ColumnarProjectionStore "
+                        + "is already declared");
+    }
+
+    @Test
+    void rejectsCrossSchemaGeneratedNameCollision()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.GeneratedCollision",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "interface GeneratedCollision { int first(); }\n"
+                        + "@ProjectionSchema\n"
+                        + "interface GeneratedCollision__ColumnarProjection {\n"
+                        + "    int second();\n"
+                        + "}\n");
+
+        assertFailedWith(compilation,
+                "Generated type name collision: example."
+                        + "GeneratedCollision__ColumnarProjectionStore");
+    }
+
+    @Test
+    void rejectsNestedSchemaGeneratedNameCollision()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.NestedCollisionContainer",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "public final class NestedCollisionContainer {\n"
+                        + "    @ProjectionSchema\n"
+                        + "    interface Projection { int value(); }\n"
+                        + "}\n"
+                        + "interface NestedCollisionContainer$ProjectionStore"
+                        + " { }\n");
+
+        assertFailedWith(compilation,
+                "Generated type name collision: example."
+                        + "NestedCollisionContainer$ProjectionStore "
+                        + "is already declared");
+    }
+
+    @Test
+    void privateBatchImplementationNameIsCollisionSafe()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "BatchImplementation.Value",
+                        "package BatchImplementation;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.BatchImplementationCollision",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "interface BatchImplementationCollision {\n"
+                                + "    BatchImplementation.Value value();\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "example.BatchImplementationCollision");
+        assertTrue(generated.contains(
+                "private final class BatchImplementation_ implements"),
+                generated);
+        assertTrue(generated.contains(
+                "BatchImplementation.Value[] source"), generated);
+    }
+
+    @Test
+    void generatedStoreContractNameAvoidsRequiredSourceTypeRoots()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "SchemaStore.Value",
+                        "package SchemaStore;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "interface Schema {\n"
+                                + "    SchemaStore.Value value();\n"
+                                + "}\n"
+                                + "final class Usage {\n"
+                                + "    SchemaStore_ create() {\n"
+                                + "        return SchemaStore_.create(0);\n"
+                                + "    }\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSourceWithName(
+                compilation, "example.SchemaStore_");
+        String implementation = generatedSource(
+                compilation, "example.Schema");
+        assertTrue(contract.contains(
+                "public interface SchemaStore_"), contract);
+        assertTrue(contract.contains(
+                "Batch value(SchemaStore.Value[] source)"), contract);
+        assertTrue(implementation.contains(
+                "implements example.SchemaStore_"), implementation);
+    }
+
+    @Test
     void omitsTypeUseAnnotationsWithoutErasingTypedBatchColumns()
             throws IOException {
         Compilation compilation = compileWithProcessor(
@@ -417,20 +651,23 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "example.AnnotatedTypes$Schema");
+        String contract = generatedStoreSource(
+                compilation, "example.AnnotatedTypes$Schema");
         assertFalse(generated.contains("TypeUseMarker"), generated);
-        assertTrue(generated.contains(
+        assertFalse(contract.contains("TypeUseMarker"), contract);
+        assertTrue(contract.contains(
                 "annotatedArgument(java.util.List<java.lang.String>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "annotatedDeclaredType("
                         + "java.util.List<java.lang.String>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "annotatedTopLevel(example.TopLevelValue[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "inherited(java.util.List<java.lang.String>[] source)"),
-                generated);
+                contract);
         assertTrue(generated.contains("private java.util.List[] column"),
                 generated);
     }
@@ -461,32 +698,34 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "example.LegalSourceTypes");
-        assertTrue(generated.contains(
+        String contract = generatedStoreSource(
+                compilation, "example.LegalSourceTypes");
+        assertTrue(contract.contains(
                 "arrays(java.lang.String[][][] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "generic(java.util.List<java.lang.String>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "genericArrays(java.util.List<java.lang.String>[][] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "member(example.Owner<java.lang.String>.Inner<"
                         + "java.lang.Integer>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "nested(java.util.Map.Entry<java.lang.String, "
                         + "java.lang.Integer>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "lower(java.util.List<? super java.lang.Integer>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "unbounded(java.util.List<?>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                contract);
+        assertTrue(contract.contains(
                 "upper(java.util.List<? extends java.lang.Number>[] source)"),
-                generated);
+                contract);
         assertTrue(generated.contains("private java.util.List[][] column"),
                 generated);
     }
@@ -505,14 +744,15 @@ final class ProjectionSchemaProcessorCompilationTest {
 
         assertSucceeded(compilation);
         String generated = generatedSource(compilation, "Batch");
+        String contract = generatedStoreSource(compilation, "Batch");
         assertTrue(generated.contains(
-                "implements io.github.jutil.columnarprojection."
-                        + "ProjectionStore<Batch>"), generated);
-        assertTrue(generated.contains("public Batch_ batch()"),
-                generated);
-        assertTrue(generated.contains("public final class Batch_"), generated);
-        assertTrue(generated.contains("private Batch_()"),
-                generated);
+                "implements BatchStore"), generated);
+        assertTrue(contract.contains(
+                "ProjectionStore<Batch>"), contract);
+        assertTrue(contract.contains("Batch_ batch()"), contract);
+        assertTrue(contract.contains("interface Batch_"), contract);
+        assertTrue(generated.contains(
+                "private BatchImplementation()"), generated);
     }
 
     @Test
@@ -531,12 +771,12 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "ProjectionReturningBatch");
+        String contract = generatedStoreSource(
+                compilation, "ProjectionReturningBatch");
         assertTrue(generated.contains("private Batch[] column0;"), generated);
-        assertTrue(generated.contains("public Batch_ batch()"),
-                generated);
-        assertTrue(generated.contains(
-                "public Batch_ value(Batch[] source)"),
-                generated);
+        assertTrue(contract.contains("Batch_ batch()"), contract);
+        assertTrue(contract.contains(
+                "Batch_ value(Batch[] source)"), contract);
         assertTrue(generated.contains("public Batch value()"), generated);
     }
 
@@ -568,12 +808,13 @@ final class ProjectionSchemaProcessorCompilationTest {
 
         assertSucceeded(compilation);
         String generated = generatedSource(compilation, "example.Schema");
+        String contract = generatedStoreSource(
+                compilation, "example.Schema");
         assertTrue(generated.contains("private Batch.Value[] column0;"),
                 generated);
-        assertTrue(generated.contains("public Batch_ batch()"),
-                generated);
-        assertTrue(generated.contains(
-                "public Batch_ value(Batch.Value[] source)"), generated);
+        assertTrue(contract.contains("Batch_ batch()"), contract);
+        assertTrue(contract.contains(
+                "Batch_ value(Batch.Value[] source)"), contract);
     }
 
     @Test
@@ -599,11 +840,14 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "Batch.example.Schema");
+        String contract = generatedStoreSource(
+                compilation, "Batch.example.Schema");
         assertTrue(generated.contains(
-                "ProjectionStore<Batch.example.Schema>"), generated);
-        assertTrue(generated.contains("public Batch_ batch()"),
-                generated);
-        assertTrue(generated.contains("public final class Batch_"), generated);
+                "implements Batch.example.SchemaStore"), generated);
+        assertTrue(contract.contains(
+                "ProjectionStore<Batch.example.Schema>"), contract);
+        assertTrue(contract.contains("Batch_ batch()"), contract);
+        assertTrue(contract.contains("interface Batch_"), contract);
     }
 
     @Test
@@ -643,13 +887,16 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "example.RootPackageCollisionSchema");
-        assertTrue(generated.contains("public Batch__ batch()"),
-                generated);
-        assertTrue(generated.contains("public final class Batch__"),
-                generated);
+        String contract = generatedStoreSource(
+                compilation, "example.RootPackageCollisionSchema");
+        assertTrue(contract.contains("Batch__ batch()"), contract);
+        assertTrue(contract.contains("interface Batch__"), contract);
+        assertTrue(contract.contains(
+                "Batch__ values(java.util.Map<Batch.Value[], "
+                        + "? extends Batch_.Value>[] source)"), contract);
         assertTrue(generated.contains(
-                "public Batch__ values(java.util.Map<Batch.Value[], "
-                        + "? extends Batch_.Value>[] source)"), generated);
+                "implements example.RootPackageCollisionSchemaStore.Batch__"),
+                generated);
     }
 
     @Test
@@ -673,10 +920,12 @@ final class ProjectionSchemaProcessorCompilationTest {
 
         assertSucceeded(compilation);
         String generated = generatedSource(compilation, "Batch");
-        assertTrue(generated.contains("public Batch__ batch()"),
-                generated);
+        String contract = generatedStoreSource(compilation, "Batch");
+        assertTrue(contract.contains("Batch__ batch()"), contract);
+        assertTrue(contract.contains(
+                "Batch__ value(Batch_[] source)"), contract);
         assertTrue(generated.contains(
-                "public Batch__ value(Batch_[] source)"), generated);
+                "implements BatchStore.Batch__"), generated);
     }
 
     @Test
@@ -709,15 +958,19 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "EnclosingCollisionSchema");
-        assertTrue(generated.contains("public Batch__ batch()"),
+        String contract = generatedStoreSource(
+                compilation, "EnclosingCollisionSchema");
+        assertTrue(contract.contains("Batch__ batch()"), contract);
+        assertTrue(contract.contains("interface Batch__"), contract);
+        assertTrue(contract.contains(
+                "Batch__ first(Owner<Batch>.Inner<java.lang.String>[] "
+                        + "source)"), contract);
+        assertTrue(contract.contains(
+                "Batch__ second(Owner<Batch_>.Inner<java.lang.String>[] "
+                        + "source)"), contract);
+        assertTrue(generated.contains(
+                "implements EnclosingCollisionSchemaStore.Batch__"),
                 generated);
-        assertTrue(generated.contains("public final class Batch__"), generated);
-        assertTrue(generated.contains(
-                "public Batch__ first(Owner<Batch>.Inner<java.lang.String>[] "
-                        + "source)"), generated);
-        assertTrue(generated.contains(
-                "public Batch__ second(Owner<Batch_>.Inner<java.lang.String>[] "
-                        + "source)"), generated);
     }
 
     @Test
@@ -788,10 +1041,12 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(compilation,
                 "example.GenericFallbackContainer$Schema");
+        String contract = generatedStoreSource(compilation,
+                "example.GenericFallbackContainer$Schema");
         assertTrue(generated.contains("private java.util.List[] source0;"),
                 generated);
-        assertTrue(generated.contains(
-                "public Batch values(java.util.List[] source)"), generated);
+        assertTrue(contract.contains(
+                "Batch values(java.util.List[] source)"), contract);
         assertFalse(generated.contains("GenericFallbackContainer.Hidden"),
                 generated);
     }
@@ -1154,6 +1409,27 @@ final class ProjectionSchemaProcessorCompilationTest {
             throws IOException {
         Path generatedSource = compilation.generatedSourceOutput.resolve(
                 (schemaClassName + GENERATED_SUFFIX).replace('.', '/')
+                        + JavaFileObject.Kind.SOURCE.extension);
+        assertTrue(Files.isRegularFile(generatedSource),
+                "Expected generated source " + generatedSource
+                        + " but diagnostics were:\n"
+                        + compilation.diagnosticsText());
+        return new String(
+                Files.readAllBytes(generatedSource), StandardCharsets.UTF_8);
+    }
+
+    private static String generatedStoreSource(
+            Compilation compilation, String schemaClassName)
+            throws IOException {
+        return generatedStoreSourceWithName(
+                compilation, schemaClassName + GENERATED_STORE_SUFFIX);
+    }
+
+    private static String generatedStoreSourceWithName(
+            Compilation compilation, String generatedClassName)
+            throws IOException {
+        Path generatedSource = compilation.generatedSourceOutput.resolve(
+                generatedClassName.replace('.', '/')
                         + JavaFileObject.Kind.SOURCE.extension);
         assertTrue(Files.isRegularFile(generatedSource),
                 "Expected generated source " + generatedSource

@@ -5,11 +5,14 @@ import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import javax.annotation.processing.AbstractProcessor;
 import javax.annotation.processing.Filer;
+import javax.annotation.processing.FilerException;
 import javax.annotation.processing.Messager;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
@@ -34,14 +37,15 @@ import javax.tools.Diagnostic;
 import javax.tools.JavaFileObject;
 
 /**
- * Generates a columnar {@code ProjectionStore} implementation for every
- * interface annotated with {@code ProjectionSchema}.
+ * Generates a schema-specific {@code ProjectionStore} contract and columnar
+ * implementation for every interface annotated with {@code ProjectionSchema}.
  *
  * <p>The processor is normally discovered by the Java compiler through its
- * service-provider configuration. {@code ProjectionStores} is preferred for
- * row-oriented construction. The generated concrete store constructor and
- * typed batch API are supported for batch use; all other generated details are
- * unsupported.
+ * service-provider configuration. The generated {@code <Projection>Store}
+ * interface is the recommended schema-specific API and delegates construction
+ * to {@code ProjectionStores}. The generated concrete store constructor remains
+ * supported for direct construction; all other generated implementation
+ * details are unsupported.
  */
 @SupportedAnnotationTypes(
         "io.github.jutil.columnarprojection.ProjectionSchema")
@@ -49,6 +53,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static final String GENERATED_CLASS_SUFFIX =
             "__ColumnarProjectionStore";
+    private static final String GENERATED_STORE_SUFFIX = "Store";
     private static final int BATCH_HELPER_COLUMN_LIMIT = 128;
 
     private Elements elements;
@@ -61,7 +66,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     private TypeElement objectType;
     private final List<ExecutableElement> objectMethods =
             new ArrayList<ExecutableElement>();
-    private final Set<String> generatedTypes = new LinkedHashSet<String>();
+    private final Map<String, TypeElement> generatedTypes =
+            new LinkedHashMap<String, TypeElement>();
+    private final Map<String, TypeElement> declaredTypes =
+            new LinkedHashMap<String, TypeElement>();
 
     /**
      * Creates a processor. Compiler service discovery uses this constructor.
@@ -112,6 +120,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         if (projectionSchemaType == null) {
             return false;
         }
+        for (Element root : roundEnvironment.getRootElements()) {
+            collectDeclaredTypes(root);
+        }
         for (Element element : roundEnvironment
                 .getElementsAnnotatedWith(projectionSchemaType)) {
             processSchema(element);
@@ -135,23 +146,105 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             return;
         }
 
-        String generatedName = generatedQualifiedName(schema);
-        if (!generatedTypes.add(generatedName)) {
+        SchemaModel model = schemaModel(schema, accessors);
+        if (!claimGeneratedTypes(model)) {
             return;
         }
 
+        writeGeneratedSource(
+                model,
+                model.storeQualifiedName,
+                "projection store contract",
+                generateStoreInterfaceSource(model));
+        writeGeneratedSource(
+                model,
+                model.implementationQualifiedName,
+                "projection store implementation",
+                generateImplementationSource(model));
+    }
+
+    private void collectDeclaredTypes(Element element) {
+        if (element instanceof TypeElement) {
+            TypeElement type = (TypeElement) element;
+            declaredTypes.put(elements.getBinaryName(type).toString(), type);
+        }
+        for (Element enclosed : element.getEnclosedElements()) {
+            if (enclosed instanceof TypeElement) {
+                collectDeclaredTypes(enclosed);
+            }
+        }
+    }
+
+    private boolean claimGeneratedTypes(SchemaModel model) {
+        TypeElement existingStoreOwner =
+                generatedTypes.get(model.storeQualifiedName);
+        TypeElement existingImplementationOwner =
+                generatedTypes.get(model.implementationQualifiedName);
+        if (model.schema.equals(existingStoreOwner)
+                && model.schema.equals(existingImplementationOwner)) {
+            return false;
+        }
+
+        boolean available = generatedNameAvailable(
+                model.schema, model.storeQualifiedName);
+        available &= generatedNameAvailable(
+                model.schema, model.implementationQualifiedName);
+        if (!available) {
+            return false;
+        }
+        generatedTypes.put(model.storeQualifiedName, model.schema);
+        generatedTypes.put(model.implementationQualifiedName, model.schema);
+        return true;
+    }
+
+    private boolean generatedNameAvailable(
+            TypeElement schema, String generatedName) {
+        TypeElement owner = generatedTypes.get(generatedName);
+        if (owner != null) {
+            error(schema,
+                    "Generated type name collision: " + generatedName
+                            + " is already generated for projection schema "
+                            + owner.getQualifiedName());
+            return false;
+        }
+
+        TypeElement declaredType = declaredTypes.get(generatedName);
+        if (declaredType == null) {
+            declaredType = elements.getTypeElement(generatedName);
+        }
+        if (declaredType != null) {
+            error(schema,
+                    "Generated type name collision: " + generatedName
+                            + " is already declared by "
+                            + declaredType.getQualifiedName());
+            return false;
+        }
+        return true;
+    }
+
+    private void writeGeneratedSource(
+            SchemaModel model,
+            String generatedName,
+            String description,
+            String source) {
         try {
             JavaFileObject sourceFile =
-                    filer.createSourceFile(generatedName, schema);
+                    filer.createSourceFile(generatedName, model.schema);
             Writer writer = sourceFile.openWriter();
             try {
-                writer.write(generateSource(schema, accessors));
+                writer.write(source);
             } finally {
                 writer.close();
             }
+        } catch (FilerException exception) {
+            error(model.schema,
+                    "Generated type name collision while creating "
+                            + generatedName + ": "
+                            + exception.getMessage());
         } catch (IOException exception) {
-            error(schema,
-                    "Could not generate projection store " + generatedName
+            error(model.schema,
+                    "Could not generate " + description + " "
+                            + generatedName
                             + ": " + exception.getMessage());
         }
     }
@@ -551,29 +644,229 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         return true;
     }
 
-    private String generatedQualifiedName(TypeElement schema) {
-        return elements.getBinaryName(schema).toString()
-                + GENERATED_CLASS_SUFFIX;
-    }
-
-    private String generatedSimpleName(TypeElement schema) {
+    private SchemaModel schemaModel(
+            TypeElement schema, List<Accessor> accessors) {
         String binaryName = elements.getBinaryName(schema).toString();
         String packageName = elements.getPackageOf(schema)
                 .getQualifiedName().toString();
-        if (packageName.length() == 0) {
-            return binaryName + GENERATED_CLASS_SUFFIX;
-        }
-        return binaryName.substring(packageName.length() + 1)
-                + GENERATED_CLASS_SUFFIX;
+        String binarySimpleName = packageName.length() == 0
+                ? binaryName
+                : binaryName.substring(packageName.length() + 1);
+        String baseStoreSimpleName =
+                binarySimpleName + GENERATED_STORE_SUFFIX;
+        String implementationSimpleName =
+                binarySimpleName + GENERATED_CLASS_SUFFIX;
+        String namePrefix = packageName.length() == 0
+                ? ""
+                : packageName + ".";
+        String baseStoreQualifiedName = namePrefix + baseStoreSimpleName;
+        String storeSimpleName = declaredType(baseStoreQualifiedName) == null
+                ? nestedTypeName(
+                        baseStoreSimpleName, schema, accessors)
+                : baseStoreSimpleName;
+        return new SchemaModel(
+                schema,
+                accessors,
+                packageName,
+                schema.getQualifiedName().toString(),
+                storeSimpleName,
+                namePrefix + storeSimpleName,
+                implementationSimpleName,
+                namePrefix + implementationSimpleName,
+                batchTypeName(schema, accessors),
+                nestedTypeName("BatchImplementation", schema, accessors));
     }
 
-    private String generateSource(
-            TypeElement schema, List<Accessor> accessors) {
-        String packageName = elements.getPackageOf(schema)
-                .getQualifiedName().toString();
-        String schemaName = schema.getQualifiedName().toString();
-        String generatedSimpleName = generatedSimpleName(schema);
-        String batchTypeName = batchTypeName(schema, accessors);
+    private TypeElement declaredType(String qualifiedName) {
+        TypeElement declaredType = declaredTypes.get(qualifiedName);
+        return declaredType != null
+                ? declaredType
+                : elements.getTypeElement(qualifiedName);
+    }
+
+    private String generateStoreInterfaceSource(SchemaModel model) {
+        StringBuilder source = new StringBuilder(8192);
+        if (model.packageName.length() != 0) {
+            line(source, "package " + model.packageName + ";");
+            line(source, "");
+        }
+        line(source, "/**");
+        line(source, " * Schema-specific public store contract for {@link "
+                + model.schemaName + "}.");
+        line(source, " *");
+        line(source, " * <p>This interface exposes typed whole-array and "
+                + "common-range batch appends in addition to the row-oriented "
+                + "operations inherited from {@link io.github.jutil."
+                + "columnarprojection.ProjectionStore}. Building and batch "
+                + "mutation are not thread-safe. After sealing and safe "
+                + "publication, reads follow the inherited store contract.");
+        line(source, " */");
+        line(source, "public interface " + model.storeSimpleName);
+        line(source, "        extends io.github.jutil.columnarprojection."
+                + "ProjectionStore<" + model.schemaName + "> {");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * Creates an empty schema-specific store with the "
+                + "requested initial capacity.");
+        line(source, "     *");
+        line(source, "     * <p>This method delegates construction to {@link "
+                + "io.github.jutil.columnarprojection.ProjectionStores}. "
+                + "The requested size is a capacity hint, not a row limit.");
+        line(source, "     *");
+        line(source, "     * @param expectedSize the expected number of rows, "
+                + "or zero when unknown");
+        line(source, "     * @return a new empty store in the building state");
+        line(source, "     * @throws java.lang.IllegalArgumentException if "
+                + "{@code expectedSize} is negative");
+        line(source, "     * @throws java.lang.IllegalStateException if the "
+                + "generated implementation is unavailable, malformed, "
+                + "incompatible, stale, or cannot be instantiated");
+        line(source, "     */");
+        line(source, "    static " + model.storeSimpleName
+                + " create(int expectedSize) {");
+        line(source, "        io.github.jutil.columnarprojection."
+                + "ProjectionStore<" + model.schemaName + "> store =");
+        line(source, "                io.github.jutil.columnarprojection."
+                + "ProjectionStores.create(");
+        line(source, "                        " + model.schemaName
+                + ".class, expectedSize);");
+        line(source, "        if (!" + model.storeSimpleName
+                + ".class.isInstance(store)) {");
+        line(source, "            throw new java.lang.IllegalStateException(");
+        line(source, "                    \"Generated store for "
+                + model.schemaName + " does not implement \"");
+        line(source, "                            + \""
+                + model.storeQualifiedName
+                + "; clean and recompile using the current \"");
+        line(source, "                            + \"annotation processor\");");
+        line(source, "        }");
+        line(source, "        return " + model.storeSimpleName
+                + ".class.cast(store);");
+        line(source, "    }");
+        line(source, "");
+        appendBatchContract(source, model);
+        line(source, "}");
+        return source.toString();
+    }
+
+    private void appendBatchContract(
+            StringBuilder source, SchemaModel model) {
+        line(source, "    /**");
+        line(source, "     * Starts a typed batch that appends whole source "
+                + "arrays.");
+        line(source, "     *");
+        line(source, "     * <p>The first successfully supplied array sets "
+                + "the row count. Every column must be supplied exactly once "
+                + "with that length, including for an empty batch. Source "
+                + "arrays are retained until a successful {@link "
+                + model.batchTypeName + "#append()} and are never modified.");
+        line(source, "     *");
+        line(source, "     * @return a new unfinished batch");
+        line(source, "     * @throws java.lang.IllegalStateException if this "
+                + "store has been sealed");
+        line(source, "     */");
+        line(source, "    " + model.batchTypeName + " batch();");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * Starts a typed batch that copies a common "
+                + "half-open source-array range.");
+        line(source, "     *");
+        line(source, "     * <p>The range {@code [sourceFromIndex, "
+                + "sourceToIndex)} applies to every source array and never "
+                + "addresses existing store rows. A successful append writes "
+                + "at the store end. An empty range needs no columns.");
+        line(source, "     *");
+        line(source, "     * @param sourceFromIndex the inclusive source "
+                + "index");
+        line(source, "     * @param sourceToIndex the exclusive source "
+                + "index");
+        line(source, "     * @return a new unfinished batch");
+        line(source, "     * @throws java.lang.IndexOutOfBoundsException if "
+                + "{@code sourceFromIndex} is negative or greater than "
+                + "{@code sourceToIndex}");
+        line(source, "     * @throws java.lang.IllegalStateException if this "
+                + "store has been sealed");
+        line(source, "     */");
+        line(source, "    " + model.batchTypeName
+                + " batch(int sourceFromIndex, int sourceToIndex);");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * One-use typed column batch for "
+                + "{@link " + model.schemaName + "} rows.");
+        line(source, "     *");
+        line(source, "     * <p>Column values are validated when supplied but "
+                + "copied only by {@link #append()}. Validation failures are "
+                + "correctable and leave logical store rows unchanged. A "
+                + "successful append consumes the batch, releases retained "
+                + "source arrays, and publishes size only after all copies. "
+                + "Batch mutation is not thread-safe.");
+        line(source, "     *");
+        line(source, "     * <p>Generated signatures preserve source-nameable "
+                + "type structure and generic arguments while intentionally "
+                + "omitting type-use annotations; the projection interface "
+                + "remains authoritative for those annotations.");
+        line(source, "     */");
+        line(source, "    interface " + model.batchTypeName + " {");
+        for (Accessor accessor : model.accessors) {
+            appendBatchContractColumn(source, accessor, model.batchTypeName);
+        }
+        line(source, "");
+        line(source, "        /**");
+        line(source, "         * Validates all required columns, reserves "
+                + "capacity once, and appends the selected values.");
+        line(source, "         *");
+        line(source, "         * <p>Whole-array batches require every column, "
+                + "including when empty. Empty common-range batches are "
+                + "one-use no-ops. Positive batches perform one bulk array "
+                + "copy per column, then publish the new logical size and "
+                + "clear retained source references.");
+        line(source, "         *");
+        line(source, "         * @throws java.lang.IllegalStateException if "
+                + "a required column is missing, this batch was already "
+                + "appended, the store was sealed, or the maximum store size "
+                + "would be exceeded");
+        line(source, "         */");
+        line(source, "        void append();");
+        line(source, "    }");
+        line(source, "");
+    }
+
+    private void appendBatchContractColumn(
+            StringBuilder source,
+            Accessor accessor,
+            String batchTypeName) {
+        line(source, "");
+        line(source, "        /**");
+        line(source, "         * Supplies the {@code " + accessor.name
+                + "} column from a source array.");
+        line(source, "         *");
+        line(source, "         * <p>Whole-array mode requires the common row "
+                + "count. Common-range mode requires the complete configured "
+                + "range. Selected values are copied only when {@link "
+                + "#append()} executes; the array is retained until then and "
+                + "is never modified.");
+        line(source, "         *");
+        line(source, "         * @param source the non-null source column "
+                + "array");
+        line(source, "         * @return this batch");
+        line(source, "         * @throws java.lang.NullPointerException if "
+                + "{@code source} is null");
+        line(source, "         * @throws java.lang.IllegalArgumentException "
+                + "if a whole-array batch already has a different row count");
+        line(source, "         * @throws java.lang.IndexOutOfBoundsException "
+                + "if a common-range source does not contain the full range");
+        line(source, "         * @throws java.lang.IllegalStateException if "
+                + "this column was already supplied or the batch was "
+                + "successfully appended");
+        line(source, "         */");
+        line(source, "        " + batchTypeName + " " + accessor.name + "("
+                + batchSourceColumnType(accessor) + " source);");
+    }
+
+    private String generateImplementationSource(SchemaModel model) {
+        String packageName = model.packageName;
+        String schemaName = model.schemaName;
+        String generatedSimpleName = model.implementationSimpleName;
         StringBuilder source = new StringBuilder(8192);
         if (packageName.length() != 0) {
             line(source, "package " + packageName + ";");
@@ -591,33 +884,37 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "thread-safety contract of {@link io.github.jutil."
                 + "columnarprojection.ProjectionStore}.");
         line(source, " *");
-        line(source, " * <p>The supported generated API is this class's "
-                + "public constructor and its typed {@code batch} API. "
-                + "Runtime abstractions remain in {@code io.github.jutil."
-                + "columnarprojection}; all other generated implementation "
-                + "details are unsupported.");
+        line(source, " * <p>The public constructor remains supported for "
+                + "direct construction. The recommended schema-specific "
+                + "contract is {@link " + model.storeQualifiedName + "}.");
         line(source, " */");
         line(source, "@java.lang.SuppressWarnings({\"unchecked\", \"rawtypes\"})");
         line(source, "public final class " + generatedSimpleName);
-        line(source, "        implements io.github.jutil.columnarprojection."
-                + "ProjectionStore<" + schemaName + "> {");
+        line(source, "        implements " + model.storeQualifiedName + " {");
         line(source, "");
         line(source, "    private int size;");
         line(source, "    private int capacity;");
         line(source, "    private boolean sealed;");
-        for (int index = 0; index < accessors.size(); index++) {
+        for (int index = 0; index < model.accessors.size(); index++) {
             line(source, "    private "
-                    + storageColumnType(accessors.get(index))
+                    + storageColumnType(model.accessors.get(index))
                     + " column" + index + ";");
         }
         line(source, "");
-        appendConstructor(source, generatedSimpleName, accessors);
-        appendBatchFactories(source, batchTypeName);
-        appendAdd(source, schemaName, accessors);
+        appendConstructor(source, generatedSimpleName, model.accessors);
+        appendBatchFactories(
+                source,
+                model.storeQualifiedName + "." + model.batchTypeName,
+                model.batchImplementationTypeName);
+        appendAdd(source, schemaName, model.accessors);
         appendStoreMethods(source, schemaName);
-        appendEnsureCapacity(source, accessors);
-        appendBatch(source, accessors, batchTypeName);
-        appendProjectionView(source, schemaName, accessors);
+        appendEnsureCapacity(source, model.accessors);
+        appendBatch(
+                source,
+                model.accessors,
+                model.storeQualifiedName + "." + model.batchTypeName,
+                model.batchImplementationTypeName);
+        appendProjectionView(source, schemaName, model.accessors);
         appendCursor(source, schemaName);
         line(source, "}");
         return source.toString();
@@ -656,56 +953,24 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private void appendBatchFactories(
-            StringBuilder source, String batchTypeName) {
-        line(source, "    /**");
-        line(source, "     * Starts a typed column batch that appends whole "
-                + "source arrays.");
-        line(source, "     *");
-        line(source, "     * <p>The first successfully supplied array sets the "
-                + "row count. Every other column must be supplied with an "
-                + "array of exactly the same length, including when that "
-                + "length is zero. The returned batch retains the arrays "
-                + "until its {@link " + batchTypeName + "#append()} method "
-                + "successfully copies them. Batch mutation is not "
-                + "thread-safe.");
-        line(source, "     *");
-        line(source, "     * @return a new unfinished batch");
-        line(source, "     * @throws java.lang.IllegalStateException if this "
-                + "store has been sealed");
-        line(source, "     */");
-        line(source, "    public " + batchTypeName
+            StringBuilder source,
+            String batchContractTypeName,
+            String batchImplementationTypeName) {
+        line(source, "    /** {@inheritDoc} */");
+        line(source, "    @java.lang.Override");
+        line(source, "    public " + batchContractTypeName
                 + " batch() {");
         line(source, "        if (sealed) {");
         line(source, "            throw new java.lang.IllegalStateException("
                 + "\"Store has been sealed\");");
         line(source, "        }");
-        line(source, "        return new " + batchTypeName + "();");
+        line(source, "        return new " + batchImplementationTypeName
+                + "();");
         line(source, "    }");
         line(source, "");
-        line(source, "    /**");
-        line(source, "     * Starts a typed column batch that copies a common "
-                + "source-array range.");
-        line(source, "     *");
-        line(source, "     * <p>The half-open range {@code "
-                + "[sourceFromIndex, sourceToIndex)} is applied to every "
-                + "source array. These indexes address only the source "
-                + "arrays; successful appends always write at the current "
-                + "end of this store. Each source array may have a different "
-                + "total length but must contain the complete range. Batch "
-                + "mutation is not thread-safe.");
-        line(source, "     *");
-        line(source, "     * @param sourceFromIndex the inclusive source "
-                + "index");
-        line(source, "     * @param sourceToIndex the exclusive source "
-                + "index");
-        line(source, "     * @return a new unfinished batch");
-        line(source, "     * @throws java.lang.IndexOutOfBoundsException if "
-                + "{@code sourceFromIndex} is negative or greater than "
-                + "{@code sourceToIndex}");
-        line(source, "     * @throws java.lang.IllegalStateException if this "
-                + "store has been sealed");
-        line(source, "     */");
-        line(source, "    public " + batchTypeName
+        line(source, "    /** {@inheritDoc} */");
+        line(source, "    @java.lang.Override");
+        line(source, "    public " + batchContractTypeName
                 + " batch(int sourceFromIndex, int sourceToIndex) {");
         line(source, "        if (sealed) {");
         line(source, "            throw new java.lang.IllegalStateException("
@@ -717,7 +982,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "                    \"source range: [\" + "
                 + "sourceFromIndex + \", \" + sourceToIndex + \")\");");
         line(source, "        }");
-        line(source, "        return new " + batchTypeName
+        line(source, "        return new " + batchImplementationTypeName
                 + "(sourceFromIndex, sourceToIndex);");
         line(source, "    }");
         line(source, "");
@@ -836,7 +1101,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     private void appendBatch(
             StringBuilder source,
             List<Accessor> accessors,
-            String batchTypeName) {
+            String batchContractTypeName,
+            String batchImplementationTypeName) {
         line(source, "    /**");
         line(source, "     * A one-use, store-specific batch of typed column "
                 + "arrays.");
@@ -865,7 +1131,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "address existing store rows. Batch mutation is not "
                 + "thread-safe.");
         line(source, "     */");
-        line(source, "    public final class " + batchTypeName + " {");
+        line(source, "    private final class "
+                + batchImplementationTypeName + " implements "
+                + batchContractTypeName + " {");
         line(source, "        private final boolean wholeArray;");
         line(source, "        private final int sourceFromIndex;");
         line(source, "        private final int sourceToIndex;");
@@ -878,14 +1146,15 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "        private boolean assigned" + index + ";");
         }
         line(source, "");
-        line(source, "        private " + batchTypeName + "() {");
+        line(source, "        private " + batchImplementationTypeName
+                + "() {");
         line(source, "            this.wholeArray = true;");
         line(source, "            this.sourceFromIndex = 0;");
         line(source, "            this.sourceToIndex = 0;");
         line(source, "            this.rowCount = -1;");
         line(source, "        }");
         line(source, "");
-        line(source, "        private " + batchTypeName
+        line(source, "        private " + batchImplementationTypeName
                 + "(int sourceFromIndex, int sourceToIndex) {");
         line(source, "            this.wholeArray = false;");
         line(source, "            this.sourceFromIndex = sourceFromIndex;");
@@ -896,7 +1165,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
         for (int index = 0; index < accessors.size(); index++) {
             appendBatchColumnMethod(source, accessors.get(index), index,
-                    batchTypeName);
+                    batchContractTypeName);
         }
 
         line(source, "");
@@ -924,6 +1193,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "appended, this store has been sealed, or the maximum store "
                 + "size would be exceeded");
         line(source, "         */");
+        line(source, "        @java.lang.Override");
         line(source, "        public void append() {");
         line(source, "            requireUnconsumed();");
         line(source, "            if (sealed) {");
@@ -1051,6 +1321,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "this column was already supplied or this batch was "
                 + "successfully appended");
         line(source, "         */");
+        line(source, "        @java.lang.Override");
         line(source, "        public " + batchTypeName + " "
                 + accessor.name + "("
                 + batchSourceColumnType(accessor)
@@ -1307,6 +1578,13 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private String batchTypeName(
             TypeElement schema, List<Accessor> accessors) {
+        return nestedTypeName("Batch", schema, accessors);
+    }
+
+    private String nestedTypeName(
+            String baseName,
+            TypeElement schema,
+            List<Accessor> accessors) {
         Set<String> unavailableNames = new LinkedHashSet<String>();
         addLeadingIdentifier(
                 schema.getQualifiedName().toString(), unavailableNames);
@@ -1319,7 +1597,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             }
         }
 
-        String name = "Batch";
+        String name = baseName;
         while (unavailableNames.contains(name)) {
             name += "_";
         }
@@ -1354,6 +1632,42 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static void line(StringBuilder source, String value) {
         source.append(value).append('\n');
+    }
+
+    private static final class SchemaModel {
+        private final TypeElement schema;
+        private final List<Accessor> accessors;
+        private final String packageName;
+        private final String schemaName;
+        private final String storeSimpleName;
+        private final String storeQualifiedName;
+        private final String implementationSimpleName;
+        private final String implementationQualifiedName;
+        private final String batchTypeName;
+        private final String batchImplementationTypeName;
+
+        private SchemaModel(
+                TypeElement schema,
+                List<Accessor> accessors,
+                String packageName,
+                String schemaName,
+                String storeSimpleName,
+                String storeQualifiedName,
+                String implementationSimpleName,
+                String implementationQualifiedName,
+                String batchTypeName,
+                String batchImplementationTypeName) {
+            this.schema = schema;
+            this.accessors = accessors;
+            this.packageName = packageName;
+            this.schemaName = schemaName;
+            this.storeSimpleName = storeSimpleName;
+            this.storeQualifiedName = storeQualifiedName;
+            this.implementationSimpleName = implementationSimpleName;
+            this.implementationQualifiedName = implementationQualifiedName;
+            this.batchTypeName = batchTypeName;
+            this.batchImplementationTypeName = batchImplementationTypeName;
+        }
     }
 
     private static final class MethodMember {

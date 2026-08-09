@@ -7,6 +7,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -96,6 +99,18 @@ final class ArtifactBoundaryIT {
                         + "@ProjectionSchema\n"
                         + "public interface ConsumerProjection {\n"
                         + "    long identifier();\n"
+                        + "}\n"
+                        + "final class TypedConsumer {\n"
+                        + "    void use() {\n"
+                        + "        ConsumerProjectionStore store =\n"
+                        + "                ConsumerProjectionStore.create(2);\n"
+                        + "        store.batch()\n"
+                        + "                .identifier(new long[]{1L, 2L})\n"
+                        + "                .append();\n"
+                        + "        store.batch(0, 1)\n"
+                        + "                .identifier(new long[]{3L})\n"
+                        + "                .append();\n"
+                        + "    }\n"
                         + "}\n",
                 "ordinary-consumer");
 
@@ -105,10 +120,18 @@ final class ArtifactBoundaryIT {
                 "consumer/ConsumerProjection__ColumnarProjectionStore.java");
         Path generatedClass = compilation.classes.resolve(
                 "consumer/ConsumerProjection__ColumnarProjectionStore.class");
+        Path generatedStoreSource = compilation.generatedSources.resolve(
+                "consumer/ConsumerProjectionStore.java");
+        Path generatedStoreClass = compilation.classes.resolve(
+                "consumer/ConsumerProjectionStore.class");
         assertTrue(Files.isRegularFile(generatedSource));
         assertTrue(Files.isRegularFile(generatedClass));
+        assertTrue(Files.isRegularFile(generatedStoreSource));
+        assertTrue(Files.isRegularFile(generatedStoreClass));
         assertEquals(52, classFileMajorVersion(generatedClass),
                 "Generated source must compile to Java 8 bytecode");
+        assertEquals(52, classFileMajorVersion(generatedStoreClass),
+                "Generated contract must compile to Java 8 bytecode");
     }
 
     @Test
@@ -129,14 +152,27 @@ final class ArtifactBoundaryIT {
                 "consumer/WideProjection__ColumnarProjectionStore.java");
         Path generatedClass = compilation.classes.resolve(
                 "consumer/WideProjection__ColumnarProjectionStore.class");
+        Path generatedStoreSource = compilation.generatedSources.resolve(
+                "consumer/WideProjectionStore.java");
+        Path generatedStoreClass = compilation.classes.resolve(
+                "consumer/WideProjectionStore.class");
         assertTrue(Files.isRegularFile(generatedSource));
         assertTrue(Files.isRegularFile(generatedClass));
+        assertTrue(Files.isRegularFile(generatedStoreSource));
+        assertTrue(Files.isRegularFile(generatedStoreClass));
         assertEquals(52, classFileMajorVersion(generatedClass),
                 "Generated source must compile to Java 8 bytecode");
+        assertEquals(52, classFileMajorVersion(generatedStoreClass),
+                "Generated contract must compile to Java 8 bytecode");
 
         String generated = new String(
                 Files.readAllBytes(generatedSource), StandardCharsets.UTF_8);
         assertBoundedBatchHelpers(generated, WIDE_SCHEMA_COLUMN_COUNT);
+        assertBatchImplementationHasNoBridgeMethods(
+                coreJar, compilation.classes,
+                "consumer.WideProjection__ColumnarProjectionStore"
+                        + "$BatchImplementation",
+                "consumer.WideProjectionStore$Batch");
     }
 
     private ConsumerCompilation compileConsumer(
@@ -204,7 +240,8 @@ final class ArtifactBoundaryIT {
 
     private static void assertBoundedBatchHelpers(
             String generated, int columnCount) {
-        int batchStart = generated.indexOf("public final class Batch");
+        int batchStart = generated.indexOf(
+                "private final class BatchImplementation");
         int batchEnd = generated.indexOf(
                 "private final class ProjectionView", batchStart);
         assertTrue(batchStart >= 0, generated);
@@ -299,6 +336,27 @@ final class ArtifactBoundaryIT {
         assertEquals(columnCount, copyHelperArrayCopies, batch);
         assertEquals(columnCount, countOccurrences(
                 generated, "java.lang.System.arraycopy("), generated);
+    }
+
+    private static void assertBatchImplementationHasNoBridgeMethods(
+            Path coreJar,
+            Path classes,
+            String implementationName,
+            String contractName) throws Exception {
+        URL[] classPath = new URL[] {
+            classes.toUri().toURL(),
+            coreJar.toUri().toURL()
+        };
+        try (URLClassLoader loader = new URLClassLoader(classPath, null)) {
+            Class<?> implementation = Class.forName(
+                    implementationName, false, loader);
+            Class<?> contract = Class.forName(contractName, false, loader);
+            assertEquals(1, implementation.getInterfaces().length);
+            assertEquals(contract, implementation.getInterfaces()[0]);
+            for (Method method : implementation.getDeclaredMethods()) {
+                assertFalse(method.isBridge(), method.toString());
+            }
+        }
     }
 
     private static String methodSource(String value, String signature) {

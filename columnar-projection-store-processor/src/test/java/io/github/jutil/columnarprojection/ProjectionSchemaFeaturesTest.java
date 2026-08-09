@@ -112,10 +112,8 @@ class ProjectionSchemaFeaturesTest {
         covariant.seal();
         assertEquals(Integer.valueOf(42), covariant.viewAt(0).amount());
 
-        NestedSchemaContainer$NestedProjection__ColumnarProjectionStore
-                nested =
-                new NestedSchemaContainer$NestedProjection__ColumnarProjectionStore(
-                        0);
+        NestedSchemaContainer$NestedProjectionStore nested =
+                NestedSchemaContainer$NestedProjectionStore.create(0);
         nested.batch().identifier(new long[] {321L}).append();
         nested.seal();
         assertEquals(321L, nested.viewAt(0).identifier());

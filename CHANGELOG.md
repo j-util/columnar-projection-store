@@ -8,8 +8,11 @@ This file records user-visible changes to Columnar Projection Store.
 
 ### Added
 
-- Every generated concrete store now exposes a store-specific, type-safe batch
-  API with `batch()` for whole source arrays and
+- Every projection schema now generates a public `<Projection>Store` interface
+  that extends `ProjectionStore<Projection>`, provides a checked static factory
+  delegating to `ProjectionStores.create`, and exposes a store-specific,
+  type-safe batch contract without requiring the concrete implementation type.
+- The generated batch contract provides `batch()` for whole source arrays and
   `batch(sourceFromIndex, sourceToIndex)` for a common half-open source range.
 - Whole-array batches infer their row count from the first accepted column,
   require equal array lengths, and require every column even when all arrays
@@ -33,12 +36,22 @@ This file records user-visible changes to Columnar Projection Store.
 - Generated batch types use a deterministic collision-safe name whenever
   `Batch`, `Batch_`, or a later candidate would shadow a named-package root or
   unnamed-package top-level type required by generated source.
+- Generated store-contract and private batch-implementation names use the same
+  deterministic underscore rule when their ordinary names would shadow a type
+  root required by generated source.
+- Generated store-contract, implementation, and private batch-implementation
+  names are collision-checked; conflicts produce compiler diagnostics instead
+  of silently skipping or overwriting types.
 
 ### Changed
 
-- Generated stores now document both typed batch modes, including source-range
-  validation, empty behavior, ownership, lifecycle, ordering, and complexity
-  semantics.
+- Generated store interfaces now document construction, both typed batch modes,
+  column setters, source-range validation, empty behavior, ownership,
+  lifecycle, ordering, and complexity semantics.
+- Generated concrete stores implement their schema-specific store interfaces;
+  their public constructors and common `ProjectionStore` behavior remain
+  compatible, while private batch implementations return the exact generated
+  batch-interface type.
 - Generated batch appends keep per-method work bounded so valid wide schemas
   compile without changing validation or copy semantics.
 - API-boundary and growth-complexity documentation now distinguishes supported
