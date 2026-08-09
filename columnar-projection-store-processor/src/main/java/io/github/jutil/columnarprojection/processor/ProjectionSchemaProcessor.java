@@ -526,6 +526,18 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "package " + packageName + ";");
             line(source, "");
         }
+        line(source, "/**");
+        line(source, " * Generated columnar store for {@link " + schemaName
+                + "}.");
+        line(source, " *");
+        line(source, " * <p>Rows may be added individually or appended from "
+                + "typed column slices while the store is in its building "
+                + "state.");
+        line(source, " * Building and batch mutation are not thread-safe. "
+                + "After sealing and safe publication, reads follow the "
+                + "thread-safety contract of {@link io.github.jutil."
+                + "columnarprojection.ProjectionStore}.");
+        line(source, " */");
         line(source, "@java.lang.SuppressWarnings({\"unchecked\", \"rawtypes\"})");
         line(source, "public final class " + generatedSimpleName);
         line(source, "        implements io.github.jutil.columnarprojection."
@@ -540,9 +552,11 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
         line(source, "");
         appendConstructor(source, generatedSimpleName, accessors);
+        appendBatchFactory(source);
         appendAdd(source, schemaName, accessors);
         appendStoreMethods(source, schemaName);
         appendEnsureCapacity(source, accessors);
+        appendBatch(source, accessors);
         appendProjectionView(source, schemaName, accessors);
         appendCursor(source, schemaName);
         line(source, "}");
@@ -553,6 +567,17 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             StringBuilder source,
             String generatedSimpleName,
             List<Accessor> accessors) {
+        line(source, "    /**");
+        line(source, "     * Creates an empty store with the requested "
+                + "initial capacity.");
+        line(source, "     * The requested size is a capacity hint, not a row "
+                + "limit.");
+        line(source, "     *");
+        line(source, "     * @param expectedSize the expected number of rows, "
+                + "or zero when unknown");
+        line(source, "     * @throws java.lang.IllegalArgumentException if "
+                + "{@code expectedSize} is negative");
+        line(source, "     */");
         line(source, "    public " + generatedSimpleName
                 + "(int expectedSize) {");
         line(source, "        if (expectedSize < 0) {");
@@ -570,10 +595,44 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "");
     }
 
+    private void appendBatchFactory(StringBuilder source) {
+        line(source, "    /**");
+        line(source, "     * Starts a typed column batch for {@code rowCount} "
+                + "rows.");
+        line(source, "     *");
+        line(source, "     * <p>The returned batch retains each supplied "
+                + "source array until its {@link Batch#append()} method "
+                + "successfully copies the selected slices.");
+        line(source, "     * Batch mutation is not thread-safe.");
+        line(source, "     *");
+        line(source, "     * @param rowCount the number of values to copy from "
+                + "every column");
+        line(source, "     * @return a new unfinished batch");
+        line(source, "     * @throws java.lang.IllegalArgumentException if "
+                + "{@code rowCount} is negative");
+        line(source, "     * @throws java.lang.IllegalStateException if this "
+                + "store has been sealed");
+        line(source, "     */");
+        line(source, "    public Batch batch(int rowCount) {");
+        line(source, "        if (sealed) {");
+        line(source, "            throw new java.lang.IllegalStateException("
+                + "\"Store has been sealed\");");
+        line(source, "        }");
+        line(source, "        if (rowCount < 0) {");
+        line(source, "            throw new java.lang.IllegalArgumentException(");
+        line(source, "                    \"rowCount must be greater than or "
+                + "equal to zero\");");
+        line(source, "        }");
+        line(source, "        return new Batch(rowCount);");
+        line(source, "    }");
+        line(source, "");
+    }
+
     private void appendAdd(
             StringBuilder source,
             String schemaName,
             List<Accessor> accessors) {
+        line(source, "    /** {@inheritDoc} */");
         line(source, "    @java.lang.Override");
         line(source, "    public void add(" + schemaName + " projection) {");
         line(source, "        if (sealed) {");
@@ -611,16 +670,19 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private void appendStoreMethods(
             StringBuilder source, String schemaName) {
+        line(source, "    /** {@inheritDoc} */");
         line(source, "    @java.lang.Override");
         line(source, "    public int size() {");
         line(source, "        return size;");
         line(source, "    }");
         line(source, "");
+        line(source, "    /** {@inheritDoc} */");
         line(source, "    @java.lang.Override");
         line(source, "    public void seal() {");
         line(source, "        sealed = true;");
         line(source, "    }");
         line(source, "");
+        line(source, "    /** {@inheritDoc} */");
         line(source, "    @java.lang.Override");
         line(source, "    public io.github.jutil.columnarprojection."
                 + "ProjectionCursor<" + schemaName + "> cursor() {");
@@ -628,6 +690,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        return new StoreCursor();");
         line(source, "    }");
         line(source, "");
+        line(source, "    /** {@inheritDoc} */");
         line(source, "    @java.lang.Override");
         line(source, "    public " + schemaName + " viewAt(int index) {");
         line(source, "        requireSealed();");
@@ -672,6 +735,163 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        capacity = newCapacity;");
         line(source, "    }");
         line(source, "");
+    }
+
+    private void appendBatch(
+            StringBuilder source, List<Accessor> accessors) {
+        line(source, "    /**");
+        line(source, "     * A one-use, store-specific batch of typed column "
+                + "slices.");
+        line(source, "     *");
+        line(source, "     * <p>For a positive row count, every column must be "
+                + "supplied exactly once. Source arrays are retained until a "
+                + "successful {@link #append()} and are never modified.");
+        line(source, "     * Mutations to source-array elements before "
+                + "appending are visible to the copy; mutations after a "
+                + "successful append do not change stored values. "
+                + "Reference-valued elements are copied as references.");
+        line(source, "     *");
+        line(source, "     * <p>Validation failures leave logical store rows "
+                + "unchanged. A missing or invalid column may be corrected "
+                + "before retrying. A successful append consumes this batch, "
+                + "releases its source-array references, and places its rows "
+                + "at the store size at execution time. Batch mutation is not "
+                + "thread-safe.");
+        line(source, "     */");
+        line(source, "    public final class Batch {");
+        line(source, "        private final int rowCount;");
+        line(source, "        private boolean consumed;");
+        for (int index = 0; index < accessors.size(); index++) {
+            line(source, "        private " + columnType(accessors.get(index))
+                    + " source" + index + ";");
+            line(source, "        private int sourceOffset" + index + ";");
+            line(source, "        private boolean assigned" + index + ";");
+        }
+        line(source, "");
+        line(source, "        private Batch(int rowCount) {");
+        line(source, "            this.rowCount = rowCount;");
+        line(source, "        }");
+
+        for (int index = 0; index < accessors.size(); index++) {
+            appendBatchColumnMethod(source, accessors.get(index), index);
+        }
+
+        line(source, "");
+        line(source, "        /**");
+        line(source, "         * Copies {@code rowCount} values from every "
+                + "supplied column and appends them as rows.");
+        line(source, "         *");
+        line(source, "         * <p>A zero-row batch is a valid no-op and does "
+                + "not require column assignments. The destination position "
+                + "is the store size when this method executes.");
+        line(source, "         * For a positive batch, execution time is "
+                + "linear in the total number of copied values, plus any "
+                + "required column-capacity growth.");
+        line(source, "         *");
+        line(source, "         * @throws java.lang.IllegalStateException if a "
+                + "positive batch is missing a column, this batch has already "
+                + "been appended, this store has been sealed, or the maximum "
+                + "store size would be exceeded");
+        line(source, "         */");
+        line(source, "        public void append() {");
+        line(source, "            requireUnconsumed();");
+        line(source, "            if (sealed) {");
+        line(source, "                throw new java.lang.IllegalStateException("
+                + "\"Store has been sealed\");");
+        line(source, "            }");
+        for (int index = 0; index < accessors.size(); index++) {
+            line(source, "            if (rowCount != 0 && !assigned" + index
+                    + ") {");
+            line(source, "                throw new java.lang."
+                    + "IllegalStateException(\"Column "
+                    + accessors.get(index).name
+                    + " has not been supplied\");");
+            line(source, "            }");
+        }
+        line(source, "            if (rowCount > java.lang.Integer.MAX_VALUE "
+                + "- size) {");
+        line(source, "                throw new java.lang.IllegalStateException("
+                + "\"Maximum store size reached\");");
+        line(source, "            }");
+        line(source, "            final int destinationOffset = size;");
+        line(source, "            final int requiredSize = destinationOffset "
+                + "+ rowCount;");
+        line(source, "            ensureCapacity(requiredSize);");
+        line(source, "            if (rowCount != 0) {");
+        for (int index = 0; index < accessors.size(); index++) {
+            line(source, "                java.lang.System.arraycopy(source"
+                    + index + ", sourceOffset" + index + ", column" + index
+                    + ", destinationOffset, rowCount);");
+        }
+        line(source, "            }");
+        line(source, "            size = requiredSize;");
+        for (int index = 0; index < accessors.size(); index++) {
+            line(source, "            source" + index + " = null;");
+        }
+        line(source, "            consumed = true;");
+        line(source, "        }");
+        line(source, "");
+        line(source, "        private void requireUnconsumed() {");
+        line(source, "            if (consumed) {");
+        line(source, "                throw new java.lang.IllegalStateException("
+                + "\"Batch has already been appended\");");
+        line(source, "            }");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+    }
+
+    private void appendBatchColumnMethod(
+            StringBuilder source, Accessor accessor, int index) {
+        line(source, "");
+        line(source, "        /**");
+        line(source, "         * Supplies the {@code " + accessor.name
+                + "} column from a source-array slice.");
+        line(source, "         *");
+        line(source, "         * <p>The source array is retained until "
+                + "{@link #append()} and is never modified.");
+        line(source, "         *");
+        line(source, "         * @param source the source column array");
+        line(source, "         * @param sourceOffset the first source index to "
+                + "copy");
+        line(source, "         * @return this batch");
+        line(source, "         * @throws java.lang.NullPointerException if "
+                + "{@code source} is null");
+        line(source, "         * @throws java.lang.IndexOutOfBoundsException "
+                + "if the selected slice is outside {@code source}");
+        line(source, "         * @throws java.lang.IllegalStateException if "
+                + "this column was already supplied or this batch was "
+                + "successfully appended");
+        line(source, "         */");
+        line(source, "        public Batch " + accessor.name + "("
+                + columnType(accessor)
+                + " source, int sourceOffset) {");
+        line(source, "            requireUnconsumed();");
+        line(source, "            if (assigned" + index + ") {");
+        line(source, "                throw new java.lang.IllegalStateException("
+                + "\"Column " + accessor.name
+                + " has already been supplied\");");
+        line(source, "            }");
+        line(source, "            if (source == null) {");
+        line(source, "                throw new java.lang.NullPointerException("
+                + "\"source\");");
+        line(source, "            }");
+        line(source, "            if (sourceOffset < 0");
+        line(source, "                    || rowCount > source.length "
+                + "- sourceOffset) {");
+        line(source, "                throw new java.lang."
+                + "IndexOutOfBoundsException(");
+        line(source, "                        \"sourceOffset: \" + "
+                + "sourceOffset");
+        line(source, "                        + \", rowCount: \" + rowCount");
+        line(source, "                        + \", source length: \" + "
+                + "source.length);");
+        line(source, "            }");
+        line(source, "            source" + index + " = source;");
+        line(source, "            sourceOffset" + index + " = sourceOffset;");
+        line(source, "            assigned" + index + " = true;");
+        line(source, "            return this;");
+        line(source, "        }");
     }
 
     private void appendProjectionView(

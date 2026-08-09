@@ -4,6 +4,21 @@ This file records user-visible changes to Columnar Projection Store.
 
 ## Unreleased
 
+## 1.2.0 - 2026-08-09
+
+### Added
+
+- Every generated concrete store now exposes a store-specific, type-safe batch
+  API for appending slices of column arrays with one bulk copy per column.
+- Generated batch APIs cover every supported primitive, reference, inherited,
+  covariant, and array-valued projection return type.
+
+### Changed
+
+- Generated stores now document their public constructor and typed batch API,
+  including validation, ownership, lifecycle, ordering, and complexity
+  semantics.
+
 ## 1.1.0 - 2026-08-01
 
 ### Changed

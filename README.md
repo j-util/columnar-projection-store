@@ -16,8 +16,9 @@ and targets Java 8.
 
 ## Status and installation
 
-Version `1.1.0` improves the static typing of generated reference columns while
-preserving the public API and storage semantics introduced in `1.0.0`.
+Version `1.2.0` adds a generated, type-safe batch API for appending column-array
+slices while preserving the row-oriented API and storage semantics introduced
+in `1.0.0`.
 Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
 and
@@ -33,7 +34,7 @@ processor execution explicit:
 ```xml
 <properties>
     <maven.compiler.release>8</maven.compiler.release>
-    <columnar-projection-store.version>1.1.0</columnar-projection-store.version>
+    <columnar-projection-store.version>1.2.0</columnar-projection-store.version>
 </properties>
 
 <dependencies>
@@ -144,9 +145,56 @@ public final class OrderExample {
 }
 ```
 
-The generated class is public so the factory can instantiate it, but generated
-class names, constructors, and implementation shape are not supported API.
-Always create stores through `ProjectionStores`.
+For row-oriented use, prefer `ProjectionStores.create`. The generated concrete
+store, its public constructor, and its generated `batch` and `Batch` elements
+form the type-safe batch API. Other generated implementation details, such as
+backing fields and view classes, are not supported API.
+
+## Typed batch append
+
+For a top-level projection named `PriceProjection`, the processor generates
+`PriceProjection__ColumnarProjectionStore`. Its store-specific batch accepts
+exactly the array type corresponding to each projection accessor:
+
+```java
+PriceProjection__ColumnarProjectionStore store =
+        new PriceProjection__ColumnarProjectionStore(expectedSize);
+
+store.batch(rowCount)
+        .timestamp(timestamps, timestampOffset)
+        .symbol(symbols, symbolOffset)
+        .lastTradePrice(prices, priceOffset)
+        .append();
+```
+
+Each column method selects `rowCount` values beginning at its independent
+offset. The source must be non-null, the offset must be non-negative, and the
+entire slice must fit in the source array. An offset equal to the array length
+is valid only for a zero-row batch. A positive batch requires every generated
+column method exactly once; missing and duplicate columns are rejected. A
+zero-row batch may be appended without supplying columns and is a no-op.
+
+An unfinished batch retains its source arrays but does not copy them until
+`append()` executes. Mutations to source-array elements before `append()` are
+therefore visible. A successful append copies `rowCount` values from every
+column without modifying the source arrays, then releases its references to
+those arrays. Later changes to source-array elements do not change stored
+values. Reference-valued columns still use the store's shallow reference
+semantics: referenced objects, including array-valued projection results, are
+not cloned.
+
+The destination starts at the store's size when `append()` executes, not when
+the batch is created. Consequently, multiple unfinished batches may be
+appended in any order, and their successful append calls interleave with
+`add` in execution order. Ordinary validation happens before the logical size
+changes. Missing-column and invalid-slice failures leave the batch available
+for correction and retry. After a successful append, the batch is consumed and
+cannot be reused.
+
+`batch` and `append` are building-state operations. Creating a batch on a
+sealed store fails, and sealing after batch creation makes `append()` fail
+before any column is copied. Batch construction, column assignment, `append`,
+`add`, and `seal` are not thread-safe and must not be called concurrently.
 
 ## Store lifecycle and failure behavior
 
@@ -235,6 +283,9 @@ performed inside user-written accessor bodies and one-time JVM class loading.
 | --- | --- |
 | `ProjectionStores.create` | `O(c + a)` |
 | `add` | Amortized `O(c)`; a growth step is `O(c * r)` |
+| Generated `batch` construction | `O(c)` |
+| A batch column assignment | `O(1)` |
+| Batch `append` | `O(c * (rowCount + 1))`; a growth step adds `O(c * r)` |
 | `size`, `seal`, `cursor`, `viewAt` | `O(1)` |
 | Cursor `moveNext`, `current`, `rewind` | `O(1)` |
 | A generated projection accessor | `O(1)` |
@@ -244,12 +295,17 @@ temporarily require another `O(c * r)` slots while existing columns are copied.
 `expectedSize` can avoid those copies when the eventual row count is known, but
 it allocates that initial capacity for every column.
 
+For a positive batch, append time is linear in the total number of copied
+values (`c * rowCount`). An unfinished batch temporarily retains one source
+array reference and offset per column until it is successfully appended.
+
 ## Thread safety
 
-Building a store is not thread-safe. Do not call `add` or `seal` concurrently,
-and do not read through views or cursors while building. After `seal()` and safe
-publication to reader threads, the store and stable indexed views may be read
-concurrently. Each thread must use its own cursor; cursors are not thread-safe.
+Building a store is not thread-safe. Do not call `add`, `batch`, batch column
+methods, batch `append`, or `seal` concurrently, and do not read through views
+or cursors while building. After `seal()` and safe publication to reader
+threads, the store and stable indexed views may be read concurrently. Each
+thread must use its own cursor; cursors are not thread-safe.
 
 Safe publication applies only to the stored references. The library does not
 make mutable referenced objects immutable or thread-safe.

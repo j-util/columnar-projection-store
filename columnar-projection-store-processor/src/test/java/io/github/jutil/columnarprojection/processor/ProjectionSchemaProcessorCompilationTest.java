@@ -1,5 +1,6 @@
 package io.github.jutil.columnarprojection.processor;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
@@ -271,6 +272,67 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "(java.lang.String) column5[rowIndex]"), generated);
         assertFalse(generated.contains(
                 "(java.lang.String[]) column6[rowIndex]"), generated);
+    }
+
+    @Test
+    void generatesTypedBatchApiWithBulkCopyImplementation()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.BatchSchema",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "public interface BatchSchema {\n"
+                        + "    int count();\n"
+                        + "    java.util.List<String> labels();\n"
+                        + "    byte[] payload();\n"
+                        + "    String symbol();\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(compilation, "example.BatchSchema");
+        int batchStart = generated.indexOf("public final class Batch");
+        int batchEnd = generated.indexOf(
+                "private final class ProjectionView", batchStart);
+        assertTrue(batchStart >= 0, generated);
+        assertTrue(batchEnd > batchStart, generated);
+        String batch = generated.substring(batchStart, batchEnd);
+
+        assertTrue(generated.contains("public Batch batch(int rowCount)"),
+                generated);
+        assertTrue(batch.contains("private Batch(int rowCount)"), batch);
+        assertFalse(batch.contains("public Batch(int rowCount)"), batch);
+        assertTrue(batch.contains(
+                "public Batch count(int[] source, int sourceOffset)"), batch);
+        assertTrue(batch.contains(
+                "public Batch labels(java.util.List[] source, "
+                        + "int sourceOffset)"), batch);
+        assertTrue(batch.contains(
+                "public Batch payload(byte[][] source, int sourceOffset)"),
+                batch);
+        assertTrue(batch.contains(
+                "public Batch symbol(java.lang.String[] source, "
+                        + "int sourceOffset)"), batch);
+        assertTrue(batch.contains("public void append()"), batch);
+        assertTrue(batch.contains(
+                "rowCount > source.length - sourceOffset"), batch);
+        assertTrue(batch.contains(
+                "rowCount > java.lang.Integer.MAX_VALUE - size"), batch);
+        assertEquals(1, countOccurrences(batch,
+                "ensureCapacity(requiredSize);"), batch);
+        assertEquals(4, countOccurrences(batch,
+                "java.lang.System.arraycopy("), batch);
+        assertFalse(batch.contains("for ("), batch);
+
+        int sealedCheck = batch.indexOf("if (sealed)");
+        int firstCopy = batch.indexOf("java.lang.System.arraycopy(");
+        int lastCopy = batch.lastIndexOf("java.lang.System.arraycopy(");
+        int sizeChange = batch.indexOf("size = requiredSize;");
+        int sourceClear = batch.indexOf("source0 = null;");
+        assertTrue(sealedCheck >= 0 && sealedCheck < firstCopy, batch);
+        assertTrue(lastCopy < sizeChange, batch);
+        assertTrue(sizeChange < sourceClear, batch);
     }
 
     @Test
