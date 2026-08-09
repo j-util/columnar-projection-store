@@ -526,6 +526,87 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
+    void recompilesSchemaWithPackageInfoAndRunsFactoryAndBothBatchModes()
+            throws Exception {
+        String packageInfoSource = "@java.lang.Deprecated\n"
+                + "package example;\n";
+        String schemaSource = "package example;\n"
+                + "import io.github.jutil.columnarprojection."
+                + "ProjectionSchema;\n"
+                + "@ProjectionSchema\n"
+                + "public interface PackageInfoProjection {\n"
+                + "    int quantity();\n"
+                + "    String symbol();\n"
+                + "}\n";
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "package-info-recompilation");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource("example.package-info", packageInfoSource),
+                new StringSource(
+                        "example.PackageInfoProjection", schemaSource));
+
+        assertSucceeded(first);
+
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource("example.package-info", packageInfoSource),
+                new StringSource(
+                        "example.PackageInfoProjection", schemaSource),
+                new StringSource(
+                        "example.PackageInfoProjectionConsumer",
+                        "package example;\n"
+                                + "public final class "
+                                + "PackageInfoProjectionConsumer {\n"
+                                + "    private PackageInfoProjectionConsumer()"
+                                + " { }\n"
+                                + "    public static void verify() {\n"
+                                + "        PackageInfoProjectionStore store = "
+                                + "PackageInfoProjectionStore.create(1);\n"
+                                + "        store.batch()\n"
+                                + "                .quantity(new int[]"
+                                + "{10, 20})\n"
+                                + "                .symbol(new String[]"
+                                + "{\"A\", \"B\"})\n"
+                                + "                .append();\n"
+                                + "        store.batch(1, 3)\n"
+                                + "                .quantity(new int[]"
+                                + "{0, 30, 40})\n"
+                                + "                .symbol(new String[]"
+                                + "{\"ignored\", \"C\", \"D\", "
+                                + "\"unused\"})\n"
+                                + "                .append();\n"
+                                + "        if (store.size() != 4) {\n"
+                                + "            throw new AssertionError("
+                                + "\"unexpected size\");\n"
+                                + "        }\n"
+                                + "        store.seal();\n"
+                                + "        if (store.viewAt(0).quantity() "
+                                + "!= 10\n"
+                                + "                || !\"A\".equals("
+                                + "store.viewAt(0).symbol())\n"
+                                + "                || store.viewAt(3)."
+                                + "quantity() != 40\n"
+                                + "                || !\"D\".equals("
+                                + "store.viewAt(3).symbol())) {\n"
+                                + "            throw new AssertionError("
+                                + "\"unexpected rows\");\n"
+                                + "        }\n"
+                                + "    }\n"
+                                + "}\n"));
+
+        assertSucceeded(second);
+        assertTrue(generatedStoreSource(
+                second, "example.PackageInfoProjection").contains(
+                        "Batch symbol(java.lang.String[] source)"));
+        invokeVerificationMethod(
+                second.classOutput,
+                "example.PackageInfoProjectionConsumer");
+    }
+
+    @Test
     void recompilesEvolvedSchemaAndRunsFactoryAndBothBatchModes()
             throws Exception {
         Path compilationDirectory = temporaryDirectory.resolve(
@@ -1025,6 +1106,56 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
+    void referencedExternalDescendantPackageSelectsUnderscore()
+            throws IOException {
+        Compilation external = compileWithoutProcessor(
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.SchemaStore.sub.Marker",
+                        "package example.SchemaStore.sub;\n"
+                                + "public final class Marker { }\n"));
+        assertSucceeded(external);
+
+        Compilation compilation = compileWithProcessor(
+                Collections.singletonList(external.classOutput),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"),
+                new StringSource(
+                        "example.DescendantPackageConsumer",
+                        "package example;\n"
+                                + "public final class "
+                                + "DescendantPackageConsumer {\n"
+                                + "    private final SchemaStore_ store;\n"
+                                + "    private final example.SchemaStore.sub."
+                                + "Marker marker;\n"
+                                + "    public DescendantPackageConsumer(\n"
+                                + "            SchemaStore_ store,\n"
+                                + "            example.SchemaStore.sub.Marker "
+                                + "marker) {\n"
+                                + "        this.store = store;\n"
+                                + "        this.marker = marker;\n"
+                                + "    }\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSourceWithName(
+                compilation, "example.SchemaStore_");
+        String implementation = generatedSource(
+                compilation, "example.Schema");
+        assertTrue(contract.contains("public interface SchemaStore_"),
+                contract);
+        assertTrue(implementation.contains(
+                "implements example.SchemaStore_"), implementation);
+    }
+
+    @Test
     void multiplePackagesNamedLikeStoreContractExtendUnderscoreChain()
             throws IOException {
         Compilation compilation = compileWithProcessor(
@@ -1212,6 +1343,99 @@ final class ProjectionSchemaProcessorCompilationTest {
                                 + "public interface Schema {\n"
                                 + "    java.util.List<? extends "
                                 + "SchemaStore.Value> values();\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(second,
+                "Generated store contract name changed for projection schema "
+                        + "example.Schema from example.SchemaStore to "
+                        + "example.SchemaStore_");
+        assertFailedWith(second,
+                "Clean the compilation output and recompile");
+    }
+
+    @Test
+    void genericArgumentChangingStoreContractNameRequiresCleanRebuild()
+            throws IOException {
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "generic-changed-store-name");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertSucceeded(first);
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource(
+                        "SchemaStore.Value",
+                        "package SchemaStore;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    java.util.List<SchemaStore.Value> "
+                                + "values();\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertFailedWith(second,
+                "Generated store contract name changed for projection schema "
+                        + "example.Schema from example.SchemaStore to "
+                        + "example.SchemaStore_");
+        assertFailedWith(second,
+                "Clean the compilation output and recompile");
+    }
+
+    @Test
+    void nestedEnclosingArrayRequiresCleanRebuild()
+            throws IOException {
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "nested-array-changed-store-name");
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    int value();\n"
+                                + "}\n"));
+
+        assertSucceeded(first);
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource(
+                        "SchemaStore.Owner",
+                        "package SchemaStore;\n"
+                                + "public final class Owner {\n"
+                                + "    public final class Inner { }\n"
+                                + "}\n"),
+                new StringSource(
+                        "example.Schema",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Schema {\n"
+                                + "    SchemaStore.Owner.Inner[] values();\n"
                                 + "    int value();\n"
                                 + "}\n"));
 

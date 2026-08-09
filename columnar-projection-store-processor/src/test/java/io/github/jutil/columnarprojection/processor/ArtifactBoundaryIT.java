@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -135,6 +136,47 @@ final class ArtifactBoundaryIT {
     }
 
     @Test
+    void namedModuleConsumerCompilesAndRunsWithSeparatedArtifacts()
+            throws Exception {
+        assumeFalse(isJava8Runtime(),
+                "Named-module compilation requires JDK 9 or newer");
+        Path coreJar = configuredJar("core.jar");
+        Path processorJar = configuredJar("processor.jar");
+        ConsumerCompilation compilation = compileNamedModuleConsumer(
+                coreJar, processorJar);
+
+        assertTrue(compilation.succeeded,
+                diagnosticsText(compilation.diagnostics));
+        assertTrue(Files.isRegularFile(
+                compilation.classes.resolve("module-info.class")));
+        assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
+                "consumer/NamedModuleProjectionStore.java")));
+        assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
+                "consumer/NamedModuleProjection"
+                        + "__ColumnarProjectionStore.java")));
+        assertTrue(Files.isRegularFile(compilation.classes.resolve(
+                "consumer/NamedModuleProjectionStore.class")));
+        assertTrue(Files.isRegularFile(compilation.classes.resolve(
+                "consumer/NamedModuleProjection"
+                        + "__ColumnarProjectionStore.class")));
+
+        Path javaExecutable = javaExecutable();
+        String modulePath = compilation.classes.toString()
+                + java.io.File.pathSeparator + coreJar;
+        Process process = new ProcessBuilder(
+                javaExecutable.toString(),
+                "--module-path", modulePath,
+                "--module",
+                "consumer.app/consumer.NamedModuleConsumer")
+                .redirectErrorStream(true)
+                .start();
+        String output = readUtf8(process.getInputStream());
+        int exitCode = process.waitFor();
+        assertEquals(0, exitCode, output);
+        assertTrue(output.contains("named-module-ok"), output);
+    }
+
+    @Test
     void wideConsumerSchemaCompilesWithBoundedBatchHelpers()
             throws Exception {
         Path coreJar = configuredJar("core.jar");
@@ -223,6 +265,104 @@ final class ArtifactBoundaryIT {
                 classes,
                 generatedSources,
                 diagnostics.getDiagnostics());
+    }
+
+    private ConsumerCompilation compileNamedModuleConsumer(
+            Path coreJar, Path processorJar) throws IOException {
+        Path compilationDirectory = Files.createDirectories(
+                temporaryDirectory.resolve("named-module-consumer"));
+        Path classes = Files.createDirectories(
+                compilationDirectory.resolve("classes"));
+        Path generatedSources = Files.createDirectories(
+                compilationDirectory.resolve("generated-sources"));
+
+        JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
+        assertNotNull(compiler,
+                "Integration tests require a JDK with javac");
+        DiagnosticCollector<JavaFileObject> diagnostics =
+                new DiagnosticCollector<JavaFileObject>();
+        StandardJavaFileManager fileManager = compiler.getStandardFileManager(
+                diagnostics, Locale.ROOT, StandardCharsets.UTF_8);
+        boolean succeeded;
+        try {
+            List<String> options = new ArrayList<String>(Arrays.asList(
+                    "--module-path", coreJar.toString(),
+                    "-processorpath", processorJar.toString(),
+                    "-processor", PROCESSOR_CLASS,
+                    "-d", classes.toString(),
+                    "-s", generatedSources.toString(),
+                    "--release", "9"));
+            List<StringSource> sources = Arrays.asList(
+                    new StringSource(
+                            "module-info",
+                            "module consumer.app {\n"
+                                    + "    requires "
+                                    + "columnar.projection.store;\n"
+                                    + "    exports consumer;\n"
+                                    + "}\n"),
+                    new StringSource(
+                            "consumer.NamedModuleProjection",
+                            "package consumer;\n"
+                                    + "import io.github.jutil."
+                                    + "columnarprojection.ProjectionSchema;\n"
+                                    + "@ProjectionSchema\n"
+                                    + "public interface "
+                                    + "NamedModuleProjection {\n"
+                                    + "    long identifier();\n"
+                                    + "    String symbol();\n"
+                                    + "}\n"),
+                    new StringSource(
+                            "consumer.NamedModuleConsumer",
+                            namedModuleConsumerSource()));
+            JavaCompiler.CompilationTask task = compiler.getTask(
+                    null,
+                    fileManager,
+                    diagnostics,
+                    options,
+                    null,
+                    sources);
+            succeeded = Boolean.TRUE.equals(task.call());
+        } finally {
+            fileManager.close();
+        }
+        return new ConsumerCompilation(
+                succeeded,
+                classes,
+                generatedSources,
+                diagnostics.getDiagnostics());
+    }
+
+    private static String namedModuleConsumerSource() {
+        return "package consumer;\n"
+                + "public final class NamedModuleConsumer {\n"
+                + "    private NamedModuleConsumer() { }\n"
+                + "    public static void main(String[] arguments) {\n"
+                + "        NamedModuleProjectionStore store =\n"
+                + "                NamedModuleProjectionStore.create(1);\n"
+                + "        store.batch()\n"
+                + "                .identifier(new long[]{10L, 20L})\n"
+                + "                .symbol(new String[]{\"A\", \"B\"})\n"
+                + "                .append();\n"
+                + "        store.batch(1, 3)\n"
+                + "                .identifier(new long[]{0L, 30L, 40L})\n"
+                + "                .symbol(new String[]{\"ignored\", "
+                + "\"C\", \"D\"})\n"
+                + "                .append();\n"
+                + "        if (store.size() != 4) {\n"
+                + "            throw new AssertionError(\"unexpected size\");\n"
+                + "        }\n"
+                + "        store.seal();\n"
+                + "        if (store.viewAt(0).identifier() != 10L\n"
+                + "                || !\"A\".equals("
+                + "store.viewAt(0).symbol())\n"
+                + "                || store.viewAt(3).identifier() != 40L\n"
+                + "                || !\"D\".equals("
+                + "store.viewAt(3).symbol())) {\n"
+                + "            throw new AssertionError(\"unexpected rows\");\n"
+                + "        }\n"
+                + "        System.out.println(\"named-module-ok\");\n"
+                + "    }\n"
+                + "}\n";
     }
 
     private static String wideSchemaSource(int columnCount) {
@@ -390,6 +530,23 @@ final class ArtifactBoundaryIT {
             offset += fragment.length();
         }
         return count;
+    }
+
+    private static boolean isJava8Runtime() {
+        String version = System.getProperty("java.specification.version");
+        return "1.8".equals(version) || "8".equals(version);
+    }
+
+    private static Path javaExecutable() {
+        String executableName = System.getProperty("os.name")
+                .toLowerCase(Locale.ROOT).contains("win")
+                        ? "java.exe"
+                        : "java";
+        Path executable = Paths.get(
+                System.getProperty("java.home"), "bin", executableName);
+        assertTrue(Files.isRegularFile(executable),
+                "Expected Java executable " + executable);
+        return executable;
     }
 
     private static Path configuredJar(String propertyName) {

@@ -5,6 +5,7 @@ import java.io.Writer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -133,9 +134,12 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             return false;
         }
         for (Element root : roundEnvironment.getRootElements()) {
-            declaredPackages.add(elements.getPackageOf(root)
-                    .getQualifiedName().toString());
-            collectDeclaredTypes(root);
+            if (root instanceof TypeElement) {
+                recordDeclaredPackage(elements.getPackageOf(root));
+                collectDeclaredTypes((TypeElement) root);
+            } else if (root instanceof PackageElement) {
+                recordDeclaredPackage((PackageElement) root);
+            }
         }
         for (Element element : roundEnvironment
                 .getElementsAnnotatedWith(projectionSchemaType)) {
@@ -180,14 +184,18 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 generateImplementationSource(model));
     }
 
-    private void collectDeclaredTypes(Element element) {
-        if (element instanceof TypeElement) {
-            TypeElement type = (TypeElement) element;
-            declaredTypes.put(elements.getBinaryName(type).toString(), type);
+    private void recordDeclaredPackage(PackageElement packageElement) {
+        if (packageElement != null) {
+            declaredPackages.add(
+                    packageElement.getQualifiedName().toString());
         }
-        for (Element enclosed : element.getEnclosedElements()) {
+    }
+
+    private void collectDeclaredTypes(TypeElement type) {
+        declaredTypes.put(elements.getBinaryName(type).toString(), type);
+        for (Element enclosed : type.getEnclosedElements()) {
             if (enclosed instanceof TypeElement) {
-                collectDeclaredTypes(enclosed);
+                collectDeclaredTypes((TypeElement) enclosed);
             }
         }
     }
@@ -327,9 +335,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private TypeElement findRawGenericSupertype(TypeElement schema) {
-        Set<String> visited = new LinkedHashSet<String>();
+        TypeTraversalPath traversal = new TypeTraversalPath();
         for (TypeMirror supertype : types.directSupertypes(schema.asType())) {
-            TypeElement rawType = findRawGenericSupertype(supertype, visited);
+            TypeElement rawType = findRawGenericSupertype(
+                    supertype, traversal);
             if (rawType != null) {
                 return rawType;
             }
@@ -338,12 +347,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private TypeElement findRawGenericSupertype(
-            TypeMirror type, Set<String> visited) {
+            TypeMirror type, TypeTraversalPath traversal) {
         if (type.getKind() != TypeKind.DECLARED
                 && type.getKind() != TypeKind.ERROR) {
-            return null;
-        }
-        if (!visited.add(type.toString())) {
             return null;
         }
 
@@ -353,13 +359,22 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 && declaredType.getTypeArguments().isEmpty()) {
             return typeElement;
         }
-        for (TypeMirror supertype : types.directSupertypes(declaredType)) {
-            TypeElement rawType = findRawGenericSupertype(supertype, visited);
-            if (rawType != null) {
-                return rawType;
-            }
+        if (type.getKind() == TypeKind.ERROR
+                || !traversal.enter(type)) {
+            return null;
         }
-        return null;
+        try {
+            for (TypeMirror supertype : types.directSupertypes(declaredType)) {
+                TypeElement rawType = findRawGenericSupertype(
+                        supertype, traversal);
+                if (rawType != null) {
+                    return rawType;
+                }
+            }
+            return null;
+        } finally {
+            traversal.exit(type);
+        }
     }
 
     private List<Accessor> collectAccessors(TypeElement schema) {
@@ -606,22 +621,39 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private boolean isAccessible(
             TypeMirror type, PackageElement generatedPackage) {
+        return isAccessible(
+                type, generatedPackage, new TypeTraversalPath());
+    }
+
+    private boolean isAccessible(
+            TypeMirror type,
+            PackageElement generatedPackage,
+            TypeTraversalPath traversal) {
         if (type.getKind().isPrimitive()
                 || type.getKind() == TypeKind.VOID) {
             return true;
         }
-        if (type.getKind() == TypeKind.ARRAY) {
-            return isAccessible(
-                    ((ArrayType) type).getComponentType(), generatedPackage);
-        }
-        if (type.getKind() != TypeKind.DECLARED
-                && type.getKind() != TypeKind.ERROR) {
+        if (!traversal.enter(type)) {
             return false;
         }
+        try {
+            if (type.getKind() == TypeKind.ARRAY) {
+                return isAccessible(
+                        ((ArrayType) type).getComponentType(),
+                        generatedPackage,
+                        traversal);
+            }
+            if (type.getKind() != TypeKind.DECLARED
+                    && type.getKind() != TypeKind.ERROR) {
+                return false;
+            }
 
-        TypeElement typeElement =
-                (TypeElement) ((DeclaredType) type).asElement();
-        return isAccessible(typeElement, generatedPackage);
+            TypeElement typeElement =
+                    (TypeElement) ((DeclaredType) type).asElement();
+            return isAccessible(typeElement, generatedPackage);
+        } finally {
+            traversal.exit(type);
+        }
     }
 
     private boolean isAccessible(
@@ -645,44 +677,71 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private boolean isSourceNameable(
             TypeMirror type, PackageElement generatedPackage) {
+        return isSourceNameable(
+                type, generatedPackage, new TypeTraversalPath());
+    }
+
+    private boolean isSourceNameable(
+            TypeMirror type,
+            PackageElement generatedPackage,
+            TypeTraversalPath traversal) {
         if (type.getKind().isPrimitive()
                 || type.getKind() == TypeKind.VOID) {
             return true;
         }
-        if (type.getKind() == TypeKind.ARRAY) {
-            return isSourceNameable(
-                    ((ArrayType) type).getComponentType(), generatedPackage);
-        }
-        if (type.getKind() == TypeKind.WILDCARD) {
-            WildcardType wildcard = (WildcardType) type;
-            TypeMirror extendsBound = wildcard.getExtendsBound();
-            TypeMirror superBound = wildcard.getSuperBound();
-            return (extendsBound == null
-                            || isSourceNameable(extendsBound, generatedPackage))
-                    && (superBound == null
-                            || isSourceNameable(superBound, generatedPackage));
-        }
-        if (type.getKind() != TypeKind.DECLARED
-                && type.getKind() != TypeKind.ERROR) {
+        if (type.getKind() == TypeKind.ERROR
+                || !traversal.enter(type)) {
             return false;
         }
-
-        DeclaredType declaredType = (DeclaredType) type;
-        TypeElement typeElement = (TypeElement) declaredType.asElement();
-        if (!isAccessible(typeElement, generatedPackage)) {
-            return false;
-        }
-        TypeMirror enclosingType = declaredType.getEnclosingType();
-        if (enclosingType.getKind() != TypeKind.NONE
-                && !isSourceNameable(enclosingType, generatedPackage)) {
-            return false;
-        }
-        for (TypeMirror argument : declaredType.getTypeArguments()) {
-            if (!isSourceNameable(argument, generatedPackage)) {
+        try {
+            if (type.getKind() == TypeKind.ARRAY) {
+                return isSourceNameable(
+                        ((ArrayType) type).getComponentType(),
+                        generatedPackage,
+                        traversal);
+            }
+            if (type.getKind() == TypeKind.WILDCARD) {
+                WildcardType wildcard = (WildcardType) type;
+                TypeMirror extendsBound = wildcard.getExtendsBound();
+                TypeMirror superBound = wildcard.getSuperBound();
+                return (extendsBound == null
+                                || isSourceNameable(
+                                        extendsBound,
+                                        generatedPackage,
+                                        traversal))
+                        && (superBound == null
+                                || isSourceNameable(
+                                        superBound,
+                                        generatedPackage,
+                                        traversal));
+            }
+            if (type.getKind() != TypeKind.DECLARED) {
                 return false;
             }
+
+            DeclaredType declaredType = (DeclaredType) type;
+            TypeElement typeElement = (TypeElement) declaredType.asElement();
+            if (!isAccessible(typeElement, generatedPackage)) {
+                return false;
+            }
+            TypeMirror enclosingType = declaredType.getEnclosingType();
+            if (enclosingType.getKind() != TypeKind.NONE
+                    && !isSourceNameable(
+                            enclosingType,
+                            generatedPackage,
+                            traversal)) {
+                return false;
+            }
+            for (TypeMirror argument : declaredType.getTypeArguments()) {
+                if (!isSourceNameable(
+                        argument, generatedPackage, traversal)) {
+                    return false;
+                }
+            }
+            return true;
+        } finally {
+            traversal.exit(type);
         }
-        return true;
     }
 
     private SchemaModel schemaModel(
@@ -1802,7 +1861,12 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     private String newColumnArray(Accessor accessor, String lengthExpression) {
         TypeMirror baseType = accessor.erasedReturnType;
         int trailingDimensions = 0;
+        TypeTraversalPath traversal = new TypeTraversalPath();
         while (baseType.getKind() == TypeKind.ARRAY) {
+            if (!traversal.enter(baseType)) {
+                baseType = objectType.asType();
+                break;
+            }
             baseType = ((ArrayType) baseType).getComponentType();
             trailingDimensions++;
         }
@@ -1825,84 +1889,118 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             StringBuilder source,
             TypeMirror type,
             Set<String> leadingIdentifiers) {
-        switch (type.getKind()) {
-            case BOOLEAN:
-                source.append("boolean");
-                return;
-            case BYTE:
-                source.append("byte");
-                return;
-            case SHORT:
-                source.append("short");
-                return;
-            case INT:
-                source.append("int");
-                return;
-            case LONG:
-                source.append("long");
-                return;
-            case CHAR:
-                source.append("char");
-                return;
-            case FLOAT:
-                source.append("float");
-                return;
-            case DOUBLE:
-                source.append("double");
-                return;
-            case VOID:
-                source.append("void");
-                return;
-            case ARRAY:
-                appendSourceType(
-                        source,
-                        ((ArrayType) type).getComponentType(),
-                        leadingIdentifiers);
-                source.append("[]");
-                return;
-            case WILDCARD:
-                appendWildcardSourceType(
-                        source,
-                        (WildcardType) type,
-                        leadingIdentifiers);
-                return;
-            case DECLARED:
-            case ERROR:
-                appendDeclaredSourceType(
-                        source,
-                        (DeclaredType) type,
-                        leadingIdentifiers);
-                return;
-            default:
-                throw new IllegalArgumentException(
-                        "Unsupported source type kind: " + type.getKind());
+        appendSourceType(
+                source,
+                type,
+                leadingIdentifiers,
+                new TypeTraversalPath());
+    }
+
+    private void appendSourceType(
+            StringBuilder source,
+            TypeMirror type,
+            Set<String> leadingIdentifiers,
+            TypeTraversalPath traversal) {
+        if (!traversal.enter(type)) {
+            appendCyclicSourceType(source, leadingIdentifiers);
+            return;
+        }
+        try {
+            switch (type.getKind()) {
+                case BOOLEAN:
+                    source.append("boolean");
+                    return;
+                case BYTE:
+                    source.append("byte");
+                    return;
+                case SHORT:
+                    source.append("short");
+                    return;
+                case INT:
+                    source.append("int");
+                    return;
+                case LONG:
+                    source.append("long");
+                    return;
+                case CHAR:
+                    source.append("char");
+                    return;
+                case FLOAT:
+                    source.append("float");
+                    return;
+                case DOUBLE:
+                    source.append("double");
+                    return;
+                case VOID:
+                    source.append("void");
+                    return;
+                case ARRAY:
+                    appendSourceType(
+                            source,
+                            ((ArrayType) type).getComponentType(),
+                            leadingIdentifiers,
+                            traversal);
+                    source.append("[]");
+                    return;
+                case WILDCARD:
+                    appendWildcardSourceType(
+                            source,
+                            (WildcardType) type,
+                            leadingIdentifiers,
+                            traversal);
+                    return;
+                case DECLARED:
+                    appendDeclaredSourceType(
+                            source,
+                            (DeclaredType) type,
+                            leadingIdentifiers,
+                            traversal);
+                    return;
+                case ERROR:
+                    appendUnresolvedSourceType(
+                            source,
+                            (DeclaredType) type,
+                            leadingIdentifiers);
+                    return;
+                default:
+                    throw new IllegalArgumentException(
+                            "Unsupported source type kind: " + type.getKind());
+            }
+        } finally {
+            traversal.exit(type);
         }
     }
 
     private void appendWildcardSourceType(
             StringBuilder source,
             WildcardType wildcard,
-            Set<String> leadingIdentifiers) {
+            Set<String> leadingIdentifiers,
+            TypeTraversalPath traversal) {
         source.append('?');
-        if (wildcard.getExtendsBound() != null) {
+        TypeMirror extendsBound = wildcard.getExtendsBound();
+        TypeMirror superBound = wildcard.getSuperBound();
+        if (extendsBound != null) {
             source.append(" extends ");
             appendSourceType(
                     source,
-                    wildcard.getExtendsBound(),
-                    leadingIdentifiers);
-        } else if (wildcard.getSuperBound() != null) {
+                    extendsBound,
+                    leadingIdentifiers,
+                    traversal);
+        } else if (superBound != null) {
             source.append(" super ");
             appendSourceType(
                     source,
-                    wildcard.getSuperBound(),
-                    leadingIdentifiers);
+                    superBound,
+                    leadingIdentifiers,
+                    traversal);
         }
     }
 
     private void appendDeclaredSourceType(
             StringBuilder source,
             DeclaredType declaredType,
-            Set<String> leadingIdentifiers) {
+            Set<String> leadingIdentifiers,
+            TypeTraversalPath traversal) {
         TypeElement typeElement = (TypeElement) declaredType.asElement();
         TypeMirror enclosingType = declaredType.getEnclosingType();
         if (enclosingType.getKind() == TypeKind.NONE) {
@@ -1912,7 +2010,11 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 addLeadingIdentifier(qualifiedName, leadingIdentifiers);
             }
         } else {
-            appendSourceType(source, enclosingType, leadingIdentifiers);
+            appendSourceType(
+                    source,
+                    enclosingType,
+                    leadingIdentifiers,
+                    traversal);
             source.append('.').append(typeElement.getSimpleName());
         }
 
@@ -1926,9 +2028,37 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 appendSourceType(
                         source,
                         arguments.get(index),
-                        leadingIdentifiers);
+                        leadingIdentifiers,
+                        traversal);
             }
             source.append('>');
+        }
+    }
+
+    private void appendUnresolvedSourceType(
+            StringBuilder source,
+            DeclaredType declaredType,
+            Set<String> leadingIdentifiers) {
+        TypeElement typeElement = (TypeElement) declaredType.asElement();
+        String sourceName = typeElement.getQualifiedName().toString();
+        if (sourceName.length() == 0) {
+            sourceName = typeElement.getSimpleName().toString();
+        }
+        if (sourceName.length() == 0) {
+            sourceName = "java.lang.Object";
+        }
+        source.append(sourceName);
+        if (leadingIdentifiers != null) {
+            addLeadingIdentifier(sourceName, leadingIdentifiers);
+        }
+    }
+
+    private void appendCyclicSourceType(
+            StringBuilder source, Set<String> leadingIdentifiers) {
+        String sourceName = "java.lang.Object";
+        source.append(sourceName);
+        if (leadingIdentifiers != null) {
+            addLeadingIdentifier(sourceName, leadingIdentifiers);
         }
     }
 
@@ -1984,12 +2114,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         String previousStoreSimpleName =
                 previousGeneration.storeQualifiedName.substring(
                         namePrefix.length());
+        TypeTraversalPath traversal = new TypeTraversalPath();
         for (Accessor accessor : accessors) {
             addStaleShadowedStoreRoot(
                     unavailableNames,
                     accessor.declaredReturnType,
                     previousGeneration.storeQualifiedName,
-                    previousStoreSimpleName);
+                    previousStoreSimpleName,
+                    traversal);
         }
     }
 
@@ -1997,69 +2129,85 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             Set<String> unavailableNames,
             TypeMirror type,
             String previousStoreQualifiedName,
-            String previousStoreSimpleName) {
-        if (type.getKind() == TypeKind.ARRAY) {
-            addStaleShadowedStoreRoot(
-                    unavailableNames,
-                    ((ArrayType) type).getComponentType(),
-                    previousStoreQualifiedName,
-                    previousStoreSimpleName);
+            String previousStoreSimpleName,
+            TypeTraversalPath traversal) {
+        if (!traversal.enter(type)) {
             return;
         }
-        if (type.getKind() == TypeKind.WILDCARD) {
-            WildcardType wildcard = (WildcardType) type;
-            if (wildcard.getExtendsBound() != null) {
+        try {
+            if (type.getKind() == TypeKind.ARRAY) {
                 addStaleShadowedStoreRoot(
                         unavailableNames,
-                        wildcard.getExtendsBound(),
+                        ((ArrayType) type).getComponentType(),
                         previousStoreQualifiedName,
-                        previousStoreSimpleName);
+                        previousStoreSimpleName,
+                        traversal);
+                return;
             }
-            if (wildcard.getSuperBound() != null) {
-                addStaleShadowedStoreRoot(
-                        unavailableNames,
-                        wildcard.getSuperBound(),
-                        previousStoreQualifiedName,
-                        previousStoreSimpleName);
+            if (type.getKind() == TypeKind.WILDCARD) {
+                WildcardType wildcard = (WildcardType) type;
+                TypeMirror extendsBound = wildcard.getExtendsBound();
+                TypeMirror superBound = wildcard.getSuperBound();
+                if (extendsBound != null) {
+                    addStaleShadowedStoreRoot(
+                            unavailableNames,
+                            extendsBound,
+                            previousStoreQualifiedName,
+                            previousStoreSimpleName,
+                            traversal);
+                }
+                if (superBound != null) {
+                    addStaleShadowedStoreRoot(
+                            unavailableNames,
+                            superBound,
+                            previousStoreQualifiedName,
+                            previousStoreSimpleName,
+                            traversal);
+                }
+                return;
             }
-            return;
-        }
-        if (type.getKind() != TypeKind.DECLARED
-                && type.getKind() != TypeKind.ERROR) {
-            return;
-        }
+            if (type.getKind() != TypeKind.DECLARED
+                    && type.getKind() != TypeKind.ERROR) {
+                return;
+            }
 
-        DeclaredType declaredType = (DeclaredType) type;
-        if (type.getKind() == TypeKind.ERROR) {
-            TypeElement typeElement =
-                    (TypeElement) declaredType.asElement();
-            String qualifiedName =
-                    typeElement.getQualifiedName().toString();
-            String stalePrefix = previousStoreQualifiedName + ".";
-            if (qualifiedName.startsWith(stalePrefix)) {
-                String suffix = qualifiedName.substring(stalePrefix.length());
-                String alternateName =
-                        previousStoreSimpleName + "." + suffix;
-                if (sourceTypeExists(qualifiedName)
-                        || sourceTypeExists(alternateName)) {
-                    unavailableNames.add(previousStoreSimpleName);
+            DeclaredType declaredType = (DeclaredType) type;
+            if (type.getKind() == TypeKind.ERROR) {
+                TypeElement typeElement =
+                        (TypeElement) declaredType.asElement();
+                String qualifiedName =
+                        typeElement.getQualifiedName().toString();
+                String stalePrefix = previousStoreQualifiedName + ".";
+                if (qualifiedName.startsWith(stalePrefix)) {
+                    String suffix = qualifiedName.substring(
+                            stalePrefix.length());
+                    String alternateName =
+                            previousStoreSimpleName + "." + suffix;
+                    if (sourceTypeExists(qualifiedName)
+                            || sourceTypeExists(alternateName)) {
+                        unavailableNames.add(previousStoreSimpleName);
+                    }
                 }
             }
-        }
-        TypeMirror enclosingType = declaredType.getEnclosingType();
-        if (enclosingType.getKind() != TypeKind.NONE) {
-            addStaleShadowedStoreRoot(
-                    unavailableNames,
-                    enclosingType,
-                    previousStoreQualifiedName,
-                    previousStoreSimpleName);
-        }
-        for (TypeMirror argument : declaredType.getTypeArguments()) {
-            addStaleShadowedStoreRoot(
-                    unavailableNames,
-                    argument,
-                    previousStoreQualifiedName,
-                    previousStoreSimpleName);
+            TypeMirror enclosingType = declaredType.getEnclosingType();
+            if (enclosingType.getKind() != TypeKind.NONE) {
+                addStaleShadowedStoreRoot(
+                        unavailableNames,
+                        enclosingType,
+                        previousStoreQualifiedName,
+                        previousStoreSimpleName,
+                        traversal);
+            }
+            for (TypeMirror argument : declaredType.getTypeArguments()) {
+                addStaleShadowedStoreRoot(
+                        unavailableNames,
+                        argument,
+                        previousStoreQualifiedName,
+                        previousStoreSimpleName,
+                        traversal);
+            }
+        } finally {
+            traversal.exit(type);
         }
     }
 
@@ -2096,6 +2244,62 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static void line(StringBuilder source, String value) {
         source.append(value).append('\n');
+    }
+
+    private static final class TypeTraversalPath {
+        private final Set<TypeMirror> activeTypes =
+                Collections.newSetFromMap(
+                        new IdentityHashMap<TypeMirror, Boolean>());
+        private final Set<String> activeErrorNames =
+                new LinkedHashSet<String>();
+        private final Set<Element> activeUnnamedErrorElements =
+                Collections.newSetFromMap(
+                        new IdentityHashMap<Element, Boolean>());
+
+        private boolean enter(TypeMirror type) {
+            if (!activeTypes.add(type)) {
+                return false;
+            }
+            if (type.getKind() != TypeKind.ERROR) {
+                return true;
+            }
+
+            Element element = ((DeclaredType) type).asElement();
+            String name = errorName(element);
+            boolean added = name.length() != 0
+                    ? activeErrorNames.add(name)
+                    : activeUnnamedErrorElements.add(element);
+            if (!added) {
+                activeTypes.remove(type);
+            }
+            return added;
+        }
+
+        private void exit(TypeMirror type) {
+            activeTypes.remove(type);
+            if (type.getKind() != TypeKind.ERROR) {
+                return;
+            }
+
+            Element element = ((DeclaredType) type).asElement();
+            String name = errorName(element);
+            if (name.length() != 0) {
+                activeErrorNames.remove(name);
+            } else {
+                activeUnnamedErrorElements.remove(element);
+            }
+        }
+
+        private static String errorName(Element element) {
+            if (!(element instanceof TypeElement)) {
+                return "";
+            }
+            TypeElement type = (TypeElement) element;
+            String name = type.getQualifiedName().toString();
+            return name.length() != 0
+                    ? name
+                    : type.getSimpleName().toString();
+        }
     }
 
     private static final class SchemaModel {
