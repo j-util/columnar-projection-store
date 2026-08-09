@@ -27,6 +27,12 @@ replay_pid*
 *.iml
 out/
 
+# Eclipse
+bin/
+.project
+.classpath
+.settings/
+
 .vscode/
 
 # Maven

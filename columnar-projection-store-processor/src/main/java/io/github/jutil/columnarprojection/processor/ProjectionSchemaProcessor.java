@@ -15,8 +15,6 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.lang.model.SourceVersion;
-import javax.lang.model.element.AnnotationMirror;
-import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
@@ -24,7 +22,6 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.TypeElement;
-import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.ExecutableType;
@@ -41,9 +38,10 @@ import javax.tools.JavaFileObject;
  * interface annotated with {@code ProjectionSchema}.
  *
  * <p>The processor is normally discovered by the Java compiler through its
- * service-provider configuration. Applications should use the generated
- * implementation through {@code ProjectionStores}, rather than referring to
- * its generated name directly.
+ * service-provider configuration. {@code ProjectionStores} is preferred for
+ * row-oriented construction. The generated concrete store constructor and
+ * typed batch API are supported for batch use; all other generated details are
+ * unsupported.
  */
 @SupportedAnnotationTypes(
         "io.github.jutil.columnarprojection.ProjectionSchema")
@@ -512,9 +510,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private boolean isSourceNameable(
             TypeMirror type, PackageElement generatedPackage) {
-        if (!areAnnotationsAccessible(type, generatedPackage)) {
-            return false;
-        }
         if (type.getKind().isPrimitive()
                 || type.getKind() == TypeKind.VOID) {
             return true;
@@ -550,63 +545,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         for (TypeMirror argument : declaredType.getTypeArguments()) {
             if (!isSourceNameable(argument, generatedPackage)) {
                 return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean areAnnotationsAccessible(
-            TypeMirror type, PackageElement generatedPackage) {
-        for (AnnotationMirror annotation : type.getAnnotationMirrors()) {
-            if (!isSourceNameable(annotation, generatedPackage)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean isSourceNameable(
-            AnnotationMirror annotation,
-            PackageElement generatedPackage) {
-        TypeElement annotationType = (TypeElement) annotation
-                .getAnnotationType().asElement();
-        if (!isAccessible(annotationType, generatedPackage)) {
-            return false;
-        }
-        for (AnnotationValue value : annotation.getElementValues().values()) {
-            if (!isSourceNameable(value, generatedPackage)) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private boolean isSourceNameable(
-            AnnotationValue annotationValue,
-            PackageElement generatedPackage) {
-        Object value = annotationValue.getValue();
-        if (value instanceof TypeMirror) {
-            return isSourceNameable((TypeMirror) value, generatedPackage);
-        }
-        if (value instanceof VariableElement) {
-            Element enclosing = ((VariableElement) value)
-                    .getEnclosingElement();
-            return !(enclosing instanceof TypeElement)
-                    || isAccessible(
-                            (TypeElement) enclosing, generatedPackage);
-        }
-        if (value instanceof AnnotationMirror) {
-            return isSourceNameable(
-                    (AnnotationMirror) value, generatedPackage);
-        }
-        if (value instanceof List<?>) {
-            for (Object item : (List<?>) value) {
-                if (item instanceof AnnotationValue
-                        && !isSourceNameable(
-                                (AnnotationValue) item,
-                                generatedPackage)) {
-                    return false;
-                }
             }
         }
         return true;
@@ -1132,7 +1070,92 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private String sourceType(TypeMirror type) {
-        return type.toString();
+        StringBuilder source = new StringBuilder();
+        appendSourceType(source, type);
+        return source.toString();
+    }
+
+    private void appendSourceType(StringBuilder source, TypeMirror type) {
+        switch (type.getKind()) {
+            case BOOLEAN:
+                source.append("boolean");
+                return;
+            case BYTE:
+                source.append("byte");
+                return;
+            case SHORT:
+                source.append("short");
+                return;
+            case INT:
+                source.append("int");
+                return;
+            case LONG:
+                source.append("long");
+                return;
+            case CHAR:
+                source.append("char");
+                return;
+            case FLOAT:
+                source.append("float");
+                return;
+            case DOUBLE:
+                source.append("double");
+                return;
+            case VOID:
+                source.append("void");
+                return;
+            case ARRAY:
+                appendSourceType(
+                        source, ((ArrayType) type).getComponentType());
+                source.append("[]");
+                return;
+            case WILDCARD:
+                appendWildcardSourceType(source, (WildcardType) type);
+                return;
+            case DECLARED:
+            case ERROR:
+                appendDeclaredSourceType(source, (DeclaredType) type);
+                return;
+            default:
+                throw new IllegalArgumentException(
+                        "Unsupported source type kind: " + type.getKind());
+        }
+    }
+
+    private void appendWildcardSourceType(
+            StringBuilder source, WildcardType wildcard) {
+        source.append('?');
+        if (wildcard.getExtendsBound() != null) {
+            source.append(" extends ");
+            appendSourceType(source, wildcard.getExtendsBound());
+        } else if (wildcard.getSuperBound() != null) {
+            source.append(" super ");
+            appendSourceType(source, wildcard.getSuperBound());
+        }
+    }
+
+    private void appendDeclaredSourceType(
+            StringBuilder source, DeclaredType declaredType) {
+        TypeElement typeElement = (TypeElement) declaredType.asElement();
+        TypeMirror enclosingType = declaredType.getEnclosingType();
+        if (enclosingType.getKind() == TypeKind.NONE) {
+            source.append(typeElement.getQualifiedName());
+        } else {
+            appendSourceType(source, enclosingType);
+            source.append('.').append(typeElement.getSimpleName());
+        }
+
+        List<? extends TypeMirror> arguments = declaredType.getTypeArguments();
+        if (!arguments.isEmpty()) {
+            source.append('<');
+            for (int index = 0; index < arguments.size(); index++) {
+                if (index != 0) {
+                    source.append(", ");
+                }
+                appendSourceType(source, arguments.get(index));
+            }
+            source.append('>');
+        }
     }
 
     private String batchTypeName(
@@ -1157,9 +1180,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private void collectUnnamedTopLevelTypeNames(
             TypeMirror type, Set<String> names) {
-        for (AnnotationMirror annotation : type.getAnnotationMirrors()) {
-            collectUnnamedTopLevelTypeNames(annotation, names);
-        }
         if (type.getKind() == TypeKind.ARRAY) {
             collectUnnamedTopLevelTypeNames(
                     ((ArrayType) type).getComponentType(), names);
@@ -1183,44 +1203,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
 
         DeclaredType declaredType = (DeclaredType) type;
+        TypeMirror enclosingType = declaredType.getEnclosingType();
+        if (enclosingType.getKind() != TypeKind.NONE) {
+            collectUnnamedTopLevelTypeNames(enclosingType, names);
+        }
         addUnnamedTopLevelTypeName(
                 (TypeElement) declaredType.asElement(), names);
         for (TypeMirror argument : declaredType.getTypeArguments()) {
             collectUnnamedTopLevelTypeNames(argument, names);
-        }
-    }
-
-    private void collectUnnamedTopLevelTypeNames(
-            AnnotationMirror annotation, Set<String> names) {
-        addUnnamedTopLevelTypeName(
-                (TypeElement) annotation.getAnnotationType().asElement(),
-                names);
-        for (AnnotationValue value : annotation.getElementValues().values()) {
-            collectUnnamedTopLevelTypeNames(value, names);
-        }
-    }
-
-    private void collectUnnamedTopLevelTypeNames(
-            AnnotationValue annotationValue, Set<String> names) {
-        Object value = annotationValue.getValue();
-        if (value instanceof TypeMirror) {
-            collectUnnamedTopLevelTypeNames((TypeMirror) value, names);
-        } else if (value instanceof VariableElement) {
-            Element enclosing = ((VariableElement) value)
-                    .getEnclosingElement();
-            if (enclosing instanceof TypeElement) {
-                addUnnamedTopLevelTypeName((TypeElement) enclosing, names);
-            }
-        } else if (value instanceof AnnotationMirror) {
-            collectUnnamedTopLevelTypeNames(
-                    (AnnotationMirror) value, names);
-        } else if (value instanceof List<?>) {
-            for (Object item : (List<?>) value) {
-                if (item instanceof AnnotationValue) {
-                    collectUnnamedTopLevelTypeNames(
-                            (AnnotationValue) item, names);
-                }
-            }
         }
     }
 

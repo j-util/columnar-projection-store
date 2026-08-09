@@ -339,6 +339,112 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
+    void omitsTypeUseAnnotationsWithoutErasingTypedBatchColumns()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.AnnotatedTypes",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "import java.util.List;\n"
+                        + "final class TopLevelValue { }\n"
+                        + "public final class AnnotatedTypes {\n"
+                        + "    @java.lang.annotation.Target("
+                        + "java.lang.annotation.ElementType.TYPE_USE)\n"
+                        + "    private @interface TypeUseMarker { }\n"
+                        + "    interface Parent<T> {\n"
+                        + "        java.util.List<@TypeUseMarker T> inherited();\n"
+                        + "    }\n"
+                        + "    @ProjectionSchema\n"
+                        + "    public interface Schema extends "
+                        + "Parent<@TypeUseMarker String> {\n"
+                        + "        java.util.List<@TypeUseMarker String> "
+                        + "annotatedArgument();\n"
+                        + "        @TypeUseMarker List<String> "
+                        + "annotatedDeclaredType();\n"
+                        + "        @TypeUseMarker TopLevelValue "
+                        + "annotatedTopLevel();\n"
+                        + "    }\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "example.AnnotatedTypes$Schema");
+        assertFalse(generated.contains("TypeUseMarker"), generated);
+        assertTrue(generated.contains(
+                "annotatedArgument(java.util.List<java.lang.String>[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "annotatedDeclaredType("
+                        + "java.util.List<java.lang.String>[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "annotatedTopLevel(example.TopLevelValue[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "inherited(java.util.List<java.lang.String>[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains("private java.util.List[] column"),
+                generated);
+    }
+
+    @Test
+    void rendersGenericWildcardNestedAndArrayBatchSourceTypes()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.LegalSourceTypes",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "final class Owner<T> {\n"
+                        + "    final class Inner<U> { }\n"
+                        + "}\n"
+                        + "@ProjectionSchema\n"
+                        + "public interface LegalSourceTypes {\n"
+                        + "    String[][] arrays();\n"
+                        + "    java.util.List<String> generic();\n"
+                        + "    java.util.List<String>[] genericArrays();\n"
+                        + "    Owner<String>.Inner<Integer> member();\n"
+                        + "    java.util.Map.Entry<String, Integer> nested();\n"
+                        + "    java.util.List<? super Integer> lower();\n"
+                        + "    java.util.List<?> unbounded();\n"
+                        + "    java.util.List<? extends Number> upper();\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "example.LegalSourceTypes");
+        assertTrue(generated.contains(
+                "arrays(java.lang.String[][][] source, int sourceOffset)"),
+                generated);
+        assertTrue(generated.contains(
+                "generic(java.util.List<java.lang.String>[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "genericArrays(java.util.List<java.lang.String>[][] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "member(example.Owner<java.lang.String>.Inner<"
+                        + "java.lang.Integer>[] source, int sourceOffset)"),
+                generated);
+        assertTrue(generated.contains(
+                "nested(java.util.Map.Entry<java.lang.String, "
+                        + "java.lang.Integer>[] source, int sourceOffset)"),
+                generated);
+        assertTrue(generated.contains(
+                "lower(java.util.List<? super java.lang.Integer>[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "unbounded(java.util.List<?>[] source, int sourceOffset)"),
+                generated);
+        assertTrue(generated.contains(
+                "upper(java.util.List<? extends java.lang.Number>[] source, "
+                        + "int sourceOffset)"), generated);
+        assertTrue(generated.contains("private java.util.List[][] column"),
+                generated);
+    }
+
+    @Test
     void unnamedPackageSchemaNamedBatchUsesCollisionSafeBatchType()
             throws IOException {
         Compilation compilation = compileWithProcessor(
@@ -385,6 +491,47 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "public Batch_ value(Batch[] source, int sourceOffset)"),
                 generated);
         assertTrue(generated.contains("public Batch value()"), generated);
+    }
+
+    @Test
+    void enclosingParameterizedTypesDriveBatchCollisionChain()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "EnclosingCollisionUsage",
+                "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "final class Batch { }\n"
+                        + "final class Batch_ { }\n"
+                        + "final class Owner<T> {\n"
+                        + "    final class Inner<U> { }\n"
+                        + "}\n"
+                        + "@ProjectionSchema\n"
+                        + "interface EnclosingCollisionSchema {\n"
+                        + "    Owner<Batch>.Inner<String> first();\n"
+                        + "    Owner<Batch_>.Inner<String> second();\n"
+                        + "}\n"
+                        + "final class EnclosingCollisionUsage {\n"
+                        + "    void append(\n"
+                        + "            EnclosingCollisionSchema__ColumnarProjectionStore store,\n"
+                        + "            Owner<Batch>.Inner<String>[] first,\n"
+                        + "            Owner<Batch_>.Inner<String>[] second) {\n"
+                        + "        store.batch(1).first(first, 0)"
+                        + ".second(second, 0);\n"
+                        + "    }\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "EnclosingCollisionSchema");
+        assertTrue(generated.contains("public Batch__ batch(int rowCount)"),
+                generated);
+        assertTrue(generated.contains("public final class Batch__"), generated);
+        assertTrue(generated.contains(
+                "public Batch__ first(Owner<Batch>.Inner<java.lang.String>[] "
+                        + "source, int sourceOffset)"), generated);
+        assertTrue(generated.contains(
+                "public Batch__ second(Owner<Batch_>.Inner<java.lang.String>[] "
+                        + "source, int sourceOffset)"), generated);
     }
 
     @Test
