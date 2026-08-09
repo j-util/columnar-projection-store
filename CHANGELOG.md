@@ -9,9 +9,20 @@ This file records user-visible changes to Columnar Projection Store.
 ### Added
 
 - Every generated concrete store now exposes a store-specific, type-safe batch
-  API that copies the first `rowCount` elements of each column array with one
-  bulk copy per column; longer arrays are accepted and trailing elements are
-  ignored.
+  API with `batch()` for whole source arrays and
+  `batch(sourceFromIndex, sourceToIndex)` for a common half-open source range.
+- Whole-array batches infer their row count from the first accepted column,
+  require equal array lengths, and require every column even when all arrays
+  are empty.
+- Common-range batches accept arrays with different physical lengths, copy the
+  requested range from every column, and allow an empty range to append as a
+  no-op without column assignments. Source indexes never address existing
+  rows; every successful batch appends at the store's current end.
+- Positive batches retain their source arrays until append, reserve destination
+  capacity once, and copy with one bulk array copy per column before increasing
+  the logical size. Failed assignments and missing-column appends remain
+  correctable, and successful batches are consumed and release their source
+  references.
 - Generated batch APIs cover every supported primitive, reference, inherited,
   covariant, and array-valued projection return type.
 - Parameterized batch columns preserve accessible resolved generic arguments,
@@ -23,8 +34,8 @@ This file records user-visible changes to Columnar Projection Store.
 
 ### Changed
 
-- Generated stores now document their public constructor and typed batch API,
-  including validation, ownership, lifecycle, ordering, and complexity
+- Generated stores now document both typed batch modes, including source-range
+  validation, empty behavior, ownership, lifecycle, ordering, and complexity
   semantics.
 - API-boundary and growth-complexity documentation now distinguishes supported
   generated batch entry points from other generated details and accounts for

@@ -611,7 +611,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
         line(source, "");
         appendConstructor(source, generatedSimpleName, accessors);
-        appendBatchFactory(source, batchTypeName);
+        appendBatchFactories(source, batchTypeName);
         appendAdd(source, schemaName, accessors);
         appendStoreMethods(source, schemaName);
         appendEnsureCapacity(source, accessors);
@@ -654,38 +654,70 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "");
     }
 
-    private void appendBatchFactory(
+    private void appendBatchFactories(
             StringBuilder source, String batchTypeName) {
         line(source, "    /**");
-        line(source, "     * Starts a typed column batch for {@code rowCount} "
-                + "rows.");
+        line(source, "     * Starts a typed column batch that appends whole "
+                + "source arrays.");
         line(source, "     *");
-        line(source, "     * <p>The returned batch retains each supplied "
-                + "source array until its {@link " + batchTypeName
-                + "#append()} method "
-                + "successfully copies the first {@code rowCount} elements.");
-        line(source, "     * Batch mutation is not thread-safe.");
+        line(source, "     * <p>The first successfully supplied array sets the "
+                + "row count. Every other column must be supplied with an "
+                + "array of exactly the same length, including when that "
+                + "length is zero. The returned batch retains the arrays "
+                + "until its {@link " + batchTypeName + "#append()} method "
+                + "successfully copies them. Batch mutation is not "
+                + "thread-safe.");
         line(source, "     *");
-        line(source, "     * @param rowCount the number of values to copy from "
-                + "every column");
         line(source, "     * @return a new unfinished batch");
-        line(source, "     * @throws java.lang.IllegalArgumentException if "
-                + "{@code rowCount} is negative");
         line(source, "     * @throws java.lang.IllegalStateException if this "
                 + "store has been sealed");
         line(source, "     */");
         line(source, "    public " + batchTypeName
-                + " batch(int rowCount) {");
+                + " batch() {");
         line(source, "        if (sealed) {");
         line(source, "            throw new java.lang.IllegalStateException("
                 + "\"Store has been sealed\");");
         line(source, "        }");
-        line(source, "        if (rowCount < 0) {");
-        line(source, "            throw new java.lang.IllegalArgumentException(");
-        line(source, "                    \"rowCount must be greater than or "
-                + "equal to zero\");");
+        line(source, "        return new " + batchTypeName + "();");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    /**");
+        line(source, "     * Starts a typed column batch that copies a common "
+                + "source-array range.");
+        line(source, "     *");
+        line(source, "     * <p>The half-open range {@code "
+                + "[sourceFromIndex, sourceToIndex)} is applied to every "
+                + "source array. These indexes address only the source "
+                + "arrays; successful appends always write at the current "
+                + "end of this store. Each source array may have a different "
+                + "total length but must contain the complete range. Batch "
+                + "mutation is not thread-safe.");
+        line(source, "     *");
+        line(source, "     * @param sourceFromIndex the inclusive source "
+                + "index");
+        line(source, "     * @param sourceToIndex the exclusive source "
+                + "index");
+        line(source, "     * @return a new unfinished batch");
+        line(source, "     * @throws java.lang.IndexOutOfBoundsException if "
+                + "{@code sourceFromIndex} is negative or greater than "
+                + "{@code sourceToIndex}");
+        line(source, "     * @throws java.lang.IllegalStateException if this "
+                + "store has been sealed");
+        line(source, "     */");
+        line(source, "    public " + batchTypeName
+                + " batch(int sourceFromIndex, int sourceToIndex) {");
+        line(source, "        if (sealed) {");
+        line(source, "            throw new java.lang.IllegalStateException("
+                + "\"Store has been sealed\");");
         line(source, "        }");
-        line(source, "        return new " + batchTypeName + "(rowCount);");
+        line(source, "        if (sourceFromIndex < 0");
+        line(source, "                || sourceFromIndex > sourceToIndex) {");
+        line(source, "            throw new java.lang.IndexOutOfBoundsException(");
+        line(source, "                    \"source range: [\" + "
+                + "sourceFromIndex + \", \" + sourceToIndex + \")\");");
+        line(source, "        }");
+        line(source, "        return new " + batchTypeName
+                + "(sourceFromIndex, sourceToIndex);");
         line(source, "    }");
         line(source, "");
     }
@@ -808,24 +840,31 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "     * A one-use, store-specific batch of typed column "
                 + "arrays.");
         line(source, "     *");
-        line(source, "     * <p>For a positive row count, every column must be "
-                + "supplied exactly once. Source arrays are retained until a "
-                + "successful {@link #append()} and are never modified.");
+        line(source, "     * <p>A whole-array batch requires every column "
+                + "exactly once and requires equal source lengths. An "
+                + "explicit-range batch requires every column exactly once "
+                + "unless its range is empty. Source arrays are retained "
+                + "until a successful {@link #append()} and are never "
+                + "modified.");
         line(source, "     * Mutations to source-array elements before "
                 + "appending are visible to the copy; mutations after a "
                 + "successful append do not change stored values. "
                 + "Reference-valued elements are copied as references.");
         line(source, "     *");
         line(source, "     * <p>Validation failures leave logical store rows "
-                + "unchanged. A missing column or too-short source array may "
-                + "be corrected before retrying. A successful append consumes "
-                + "this batch, releases its source-array references, and "
-                + "places its rows "
-                + "at the store size at execution time. Batch mutation is not "
+                + "unchanged. A missing column, unequal whole-array length, "
+                + "or too-short range source may be corrected before "
+                + "retrying. A successful append consumes this batch, "
+                + "releases its source-array references, and places its rows "
+                + "at the store size at execution time. Source indexes never "
+                + "address existing store rows. Batch mutation is not "
                 + "thread-safe.");
         line(source, "     */");
         line(source, "    public final class " + batchTypeName + " {");
-        line(source, "        private final int rowCount;");
+        line(source, "        private final boolean wholeArray;");
+        line(source, "        private final int sourceFromIndex;");
+        line(source, "        private final int sourceToIndex;");
+        line(source, "        private int rowCount;");
         line(source, "        private boolean consumed;");
         for (int index = 0; index < accessors.size(); index++) {
             line(source, "        private "
@@ -834,9 +873,20 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "        private boolean assigned" + index + ";");
         }
         line(source, "");
+        line(source, "        private " + batchTypeName + "() {");
+        line(source, "            this.wholeArray = true;");
+        line(source, "            this.sourceFromIndex = 0;");
+        line(source, "            this.sourceToIndex = 0;");
+        line(source, "            this.rowCount = -1;");
+        line(source, "        }");
+        line(source, "");
         line(source, "        private " + batchTypeName
-                + "(int rowCount) {");
-        line(source, "            this.rowCount = rowCount;");
+                + "(int sourceFromIndex, int sourceToIndex) {");
+        line(source, "            this.wholeArray = false;");
+        line(source, "            this.sourceFromIndex = sourceFromIndex;");
+        line(source, "            this.sourceToIndex = sourceToIndex;");
+        line(source, "            this.rowCount = sourceToIndex "
+                + "- sourceFromIndex;");
         line(source, "        }");
 
         for (int index = 0; index < accessors.size(); index++) {
@@ -846,12 +896,15 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
         line(source, "");
         line(source, "        /**");
-        line(source, "         * Copies {@code rowCount} values from every "
+        line(source, "         * Copies this batch's values from every "
                 + "supplied column and appends them as rows.");
         line(source, "         *");
-        line(source, "         * <p>A zero-row batch is a valid no-op and does "
-                + "not require column assignments. The destination position "
-                + "is the store size when this method executes.");
+        line(source, "         * <p>A whole-array batch requires every column, "
+                + "including when all arrays are empty. An empty explicit "
+                + "range is a valid no-op and does not require column "
+                + "assignments. The destination position is the store size "
+                + "when this method executes; source indexes never select "
+                + "destination rows.");
         line(source, "         * For a positive batch, execution time is "
                 + "{@code O(c * rowCount)} for {@code c} columns without "
                 + "growth. If capacity grows to {@code newCapacity}, growth "
@@ -862,9 +915,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "backing slots.");
         line(source, "         *");
         line(source, "         * @throws java.lang.IllegalStateException if a "
-                + "positive batch is missing a column, this batch has already "
-                + "been appended, this store has been sealed, or the maximum "
-                + "store size would be exceeded");
+                + "required column is missing, this batch has already been "
+                + "appended, this store has been sealed, or the maximum store "
+                + "size would be exceeded");
         line(source, "         */");
         line(source, "        public void append() {");
         line(source, "            requireUnconsumed();");
@@ -873,8 +926,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "\"Store has been sealed\");");
         line(source, "            }");
         for (int index = 0; index < accessors.size(); index++) {
-            line(source, "            if (rowCount != 0 && !assigned" + index
-                    + ") {");
+            line(source, "            if ((wholeArray || rowCount != 0)"
+                    + " && !assigned" + index + ") {");
             line(source, "                throw new java.lang."
                     + "IllegalStateException(\"Column "
                     + accessors.get(index).name
@@ -893,7 +946,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "            if (rowCount != 0) {");
         for (int index = 0; index < accessors.size(); index++) {
             line(source, "                java.lang.System.arraycopy(source"
-                    + index + ", 0, column" + index
+                    + index + ", sourceFromIndex, column" + index
                     + ", destinationOffset, rowCount);");
         }
         line(source, "            }");
@@ -924,19 +977,25 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "         * Supplies the {@code " + accessor.name
                 + "} column from a source array.");
         line(source, "         *");
-        line(source, "         * <p>The source array must contain at least "
-                + "{@code rowCount} elements. The first {@code rowCount} "
-                + "elements are copied when {@link #append()} executes; "
-                + "trailing elements are ignored. The source array is "
-                + "retained until then and is never modified.");
+        line(source, "         * <p>In whole-array mode, the first accepted "
+                + "column establishes the row count and every later column "
+                + "must have exactly that length. In explicit-range mode, "
+                + "the array must contain the complete common half-open "
+                + "source range. The selected values are copied when "
+                + "{@link #append()} executes; values outside an explicit "
+                + "range are ignored. The source array is retained until "
+                + "then and is never modified.");
         line(source, "         *");
         line(source, "         * @param source the source column array");
         line(source, "         * @return this batch");
         line(source, "         * @throws java.lang.NullPointerException if "
                 + "{@code source} is null");
+        line(source, "         * @throws java.lang.IllegalArgumentException "
+                + "if this is a whole-array batch whose row count was already "
+                + "established by an array of a different length");
         line(source, "         * @throws java.lang.IndexOutOfBoundsException "
-                + "if {@code source} has fewer than {@code rowCount} "
-                + "elements");
+                + "if this is an explicit-range batch and {@code source} does "
+                + "not contain its complete range");
         line(source, "         * @throws java.lang.IllegalStateException if "
                 + "this column was already supplied or this batch was "
                 + "successfully appended");
@@ -955,10 +1014,22 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "                throw new java.lang.NullPointerException("
                 + "\"source\");");
         line(source, "            }");
-        line(source, "            if (source.length < rowCount) {");
+        line(source, "            if (wholeArray) {");
+        line(source, "                if (rowCount < 0) {");
+        line(source, "                    rowCount = source.length;");
+        line(source, "                } else if (source.length != rowCount) {");
+        line(source, "                    throw new java.lang."
+                + "IllegalArgumentException(");
+        line(source, "                            \"source length: \" + "
+                + "source.length");
+        line(source, "                            + \", required length: \" "
+                + "+ rowCount);");
+        line(source, "                }");
+        line(source, "            } else if (source.length < sourceToIndex) {");
         line(source, "                throw new java.lang."
                 + "IndexOutOfBoundsException(");
-        line(source, "                        \"rowCount: \" + rowCount");
+        line(source, "                        \"sourceToIndex: \" + "
+                + "sourceToIndex");
         line(source, "                        + \", source length: \" + "
                 + "source.length);");
         line(source, "            }");

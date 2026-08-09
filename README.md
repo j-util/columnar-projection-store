@@ -157,25 +157,41 @@ supported API.
 
 For a top-level projection named `PriceProjection`, the processor generates
 `PriceProjection__ColumnarProjectionStore`. Its store-specific batch accepts
-exactly the array type corresponding to each projection accessor:
+exactly the array type corresponding to each projection accessor. Whole-array
+mode copies every element:
 
 ```java
 PriceProjection__ColumnarProjectionStore store =
         new PriceProjection__ColumnarProjectionStore(expectedSize);
 
-store.batch(rowCount)
+store.batch()
         .timestamp(timestamps)
         .symbol(symbols)
         .lastTradePrice(prices)
         .append();
 ```
 
+Common-range mode applies one half-open source range to every column:
+
+```java
+store.batch(sourceFromIndex, sourceToIndex)
+        .timestamp(timestamps)
+        .symbol(symbols)
+        .lastTradePrice(prices)
+        .append();
+```
+
+`sourceFromIndex` is inclusive and `sourceToIndex` is exclusive. They are
+indexes into each supplied source array, never indexes into the store. Both
+modes always append at the store's current size when `append()` executes; they
+cannot address, replace, or overwrite existing rows.
+
 The returned nested type is ordinarily named `Batch`. If that name would
 shadow the first identifier of a type reference required by generated source,
 the processor chooses a deterministic collision-safe name by appending
 underscores. This covers named-package roots and unnamed-package top-level
-types. Chained use through `batch(...)`, as above, does not require callers to
-spell the nested type name.
+types. Chained use through either `batch` factory, as above, does not require
+callers to spell the nested type name.
 
 For a parameterized accessor, a batch column preserves the resolved declared
 return type whenever every part of that type can legally be named from the
@@ -187,31 +203,47 @@ to the generated top-level class, the batch column also falls back to the
 erased array type. This fallback preserves schemas accepted by earlier
 versions, but necessarily loses generic argument checking for that column.
 
-Each column method requires a non-null source array containing at least
-`rowCount` elements. The first `rowCount` elements are copied. Longer arrays
-are accepted and their trailing elements are ignored. A too-short source array
-throws `IndexOutOfBoundsException` before that column is assigned, so the
-column remains available for correction. A positive batch requires every
-generated column method exactly once; missing and duplicate columns are
-rejected. A zero-row batch may be appended without supplying columns and is a
-no-op; its column methods accept any non-null empty or non-empty source array.
+In whole-array mode, the first non-null array successfully assigned to a
+column establishes the row count. Every later column array must have exactly
+that length. An unequal array throws `IllegalArgumentException` before that
+column is assigned, so it remains available for correction. Every generated
+column method must be called exactly once, even for an empty whole-array batch.
+Consequently, `batch().append()` fails with `IllegalStateException`; represent
+an empty whole-array batch by supplying an empty array for every column.
+
+In common-range mode, creation requires
+`0 <= sourceFromIndex <= sourceToIndex`; an invalid range throws
+`IndexOutOfBoundsException`. Every supplied array must have length at least
+`sourceToIndex`. Arrays may have different physical lengths as long as each
+contains the complete range. A too-short array throws
+`IndexOutOfBoundsException` before that column is assigned, so it remains
+available for correction. A positive range requires every generated column
+method exactly once. An empty explicit range may be appended as a no-op without
+any column assignments; if a column is supplied, it is still validated against
+`sourceToIndex`.
+
+In both modes, a column rejects `null` with `NullPointerException`, and a
+second successful assignment to the same column throws
+`IllegalStateException`. Missing-column failures leave the unfinished batch
+available for correction and retry.
 
 An unfinished batch retains its source arrays but does not copy them until
-`append()` executes. Mutations to source-array elements before `append()` are
-therefore visible within the copied prefix. A successful append copies the
-first `rowCount` values from every column without modifying the source arrays,
-then releases its references to those arrays. Later changes to source-array
-elements do not change stored values. Reference-valued columns still use the
-store's shallow reference semantics: referenced objects, including
+`append()` executes. Mutations to selected source-array elements before
+`append()` are therefore visible. A successful positive append reserves
+destination capacity once, performs one `System.arraycopy` from each column,
+and increases the logical size only after all column copies complete. It does
+not modify the source arrays and releases its references to them after success.
+Later replacement or mutation of source-array elements does not change the
+stored values. Reference-valued elements still use the store's shallow-copy
+semantics: the references are copied, while the referenced objects, including
 array-valued projection results, are not cloned.
 
 The destination starts at the store's size when `append()` executes, not when
-the batch is created. Consequently, multiple unfinished batches may be
-appended in any order, and their successful append calls interleave with
-`add` in execution order. Ordinary validation happens before the logical size
-changes. Missing-column and too-short-source-array failures leave the batch
-available for correction and retry. After a successful append, the batch is
-consumed and cannot be reused.
+the batch is created. Consequently, multiple unfinished whole-array and ranged
+batches may be appended in any order, and their successful append calls
+interleave with `add` in execution order. Ordinary validation happens before
+the logical size changes. After a successful append, including an empty-range
+no-op, the batch is consumed and cannot be reused.
 
 `batch` and `append` are building-state operations. Creating a batch on a
 sealed store fails, and sealing after batch creation makes `append()` fail
@@ -308,7 +340,7 @@ class loading.
 | `add` | Amortized `O(c)`; a growth step is `O(c * newCapacity)` |
 | Generated `batch` construction | `O(c)` |
 | A batch column assignment | `O(1)` |
-| Batch `append` | Without growth, `O(c * (rowCount + 1))`; with growth, `O(c * (newCapacity + rowCount + 1))` |
+| Batch `append` | Without growth, `O(c * (n + 1))`; with growth, `O(c * (newCapacity + n + 1))`, where `n` is the selected row count |
 | `size`, `seal`, `cursor`, `viewAt` | `O(1)` |
 | Cursor `moveNext`, `current`, `rewind` | `O(1)` |
 | A generated projection accessor | `O(1)` |
@@ -317,16 +349,17 @@ The retained column storage is `O(c * capacity)` array slots. Growth can
 temporarily require another `O(c * newCapacity)` slots while existing columns
 of length `capacity` are copied. At the peak, both generations can be live, for
 `O(c * (capacity + newCapacity))` backing-array slots. This includes a large
-batch that makes `newCapacity` jump from `capacity` to at least
-`r + rowCount`; its temporary growth storage is not bounded by `O(c * r)`.
+batch that makes `newCapacity` jump from `capacity` to at least `r + n`; its
+temporary growth storage is not bounded by `O(c * r)`.
 `expectedSize` can avoid those copies when the eventual row count is known, but
 it allocates that initial capacity for every column.
 
 For a positive batch, append time is linear in the total number of copied
-values (`c * rowCount`) in addition to any growth work. An unfinished batch
-retains one source-array reference per assigned column until it is successfully
-appended; because caller-owned source arrays may be longer than `rowCount`, the
-amount of source storage kept reachable is not bounded by `rowCount`.
+values (`c * n`) in addition to any growth work. An unfinished batch retains
+one source-array reference per assigned column until it is successfully
+appended. In common-range mode, caller-owned source arrays may be much longer
+than `n`, so the amount of source storage kept reachable is not bounded by the
+selected row count.
 
 ## Thread safety
 

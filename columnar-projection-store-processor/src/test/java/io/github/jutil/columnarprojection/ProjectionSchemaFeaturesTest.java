@@ -92,13 +92,13 @@ class ProjectionSchemaFeaturesTest {
     void generatedBatchesSupportDefaultsInheritanceCovarianceAndNesting() {
         DefaultMethodProjection__ColumnarProjectionStore defaults =
                 new DefaultMethodProjection__ColumnarProjectionStore(0);
-        defaults.batch(1).quantity(new int[] {7}).append();
+        defaults.batch().quantity(new int[] {7}).append();
         defaults.seal();
         assertEquals(14, defaults.viewAt(0).doubledQuantity());
 
         InheritedStringProjection__ColumnarProjectionStore inherited =
                 new InheritedStringProjection__ColumnarProjectionStore(0);
-        inherited.batch(1)
+        inherited.batch()
                 .inheritedValue(new String[] {"inherited"})
                 .append();
         inherited.seal();
@@ -106,7 +106,7 @@ class ProjectionSchemaFeaturesTest {
 
         CovariantIntegerProjection__ColumnarProjectionStore covariant =
                 new CovariantIntegerProjection__ColumnarProjectionStore(0);
-        covariant.batch(1)
+        covariant.batch()
                 .amount(new Integer[] {Integer.valueOf(42)})
                 .append();
         covariant.seal();
@@ -116,7 +116,7 @@ class ProjectionSchemaFeaturesTest {
                 nested =
                 new NestedSchemaContainer$NestedProjection__ColumnarProjectionStore(
                         0);
-        nested.batch(1).identifier(new long[] {321L}).append();
+        nested.batch().identifier(new long[] {321L}).append();
         nested.seal();
         assertEquals(321L, nested.viewAt(0).identifier());
     }

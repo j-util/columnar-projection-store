@@ -299,10 +299,17 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(batchEnd > batchStart, generated);
         String batch = generated.substring(batchStart, batchEnd);
 
-        assertTrue(generated.contains("public Batch batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch batch()"), generated);
+        assertTrue(generated.contains(
+                "public Batch batch(int sourceFromIndex, "
+                        + "int sourceToIndex)"),
                 generated);
-        assertTrue(batch.contains("private Batch(int rowCount)"), batch);
-        assertFalse(batch.contains("public Batch(int rowCount)"), batch);
+        assertFalse(generated.contains("batch(int rowCount)"), generated);
+        assertTrue(batch.contains("private Batch()"), batch);
+        assertTrue(batch.contains(
+                "private Batch(int sourceFromIndex, int sourceToIndex)"),
+                batch);
+        assertFalse(batch.contains("public Batch("), batch);
         assertTrue(batch.contains(
                 "public Batch count(int[] source)"), batch);
         assertTrue(batch.contains(
@@ -317,15 +324,16 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(batch.contains(
                 "public Batch symbol(java.lang.String[] source)"), batch);
         assertTrue(batch.contains("public void append()"), batch);
-        assertTrue(batch.contains("source.length < rowCount"), batch);
-        assertFalse(batch.contains("sourceOffset"), batch);
+        assertTrue(batch.contains("source.length != rowCount"), batch);
+        assertTrue(batch.contains("source.length < sourceToIndex"), batch);
         assertTrue(batch.contains(
                 "rowCount > java.lang.Integer.MAX_VALUE - size"), batch);
         assertEquals(1, countOccurrences(batch,
                 "ensureCapacity(requiredSize);"), batch);
         assertEquals(4, countOccurrences(batch,
                 "java.lang.System.arraycopy("), batch);
-        assertEquals(4, countOccurrences(batch, ", 0, column"), batch);
+        assertEquals(4, countOccurrences(batch,
+                ", sourceFromIndex, column"), batch);
         assertFalse(batch.contains("for ("), batch);
 
         int sealedCheck = batch.indexOf("if (sealed)");
@@ -461,10 +469,10 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(generated.contains(
                 "implements io.github.jutil.columnarprojection."
                         + "ProjectionStore<Batch>"), generated);
-        assertTrue(generated.contains("public Batch_ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch_ batch()"),
                 generated);
         assertTrue(generated.contains("public final class Batch_"), generated);
-        assertTrue(generated.contains("private Batch_(int rowCount)"),
+        assertTrue(generated.contains("private Batch_()"),
                 generated);
     }
 
@@ -485,7 +493,7 @@ final class ProjectionSchemaProcessorCompilationTest {
         String generated = generatedSource(
                 compilation, "ProjectionReturningBatch");
         assertTrue(generated.contains("private Batch[] column0;"), generated);
-        assertTrue(generated.contains("public Batch_ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch_ batch()"),
                 generated);
         assertTrue(generated.contains(
                 "public Batch_ value(Batch[] source)"),
@@ -514,7 +522,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                                 + "    void append("
                                 + "Schema__ColumnarProjectionStore store, "
                                 + "Batch.Value[] values) {\n"
-                                + "        store.batch(1).value(values)"
+                                + "        store.batch().value(values)"
                                 + ".append();\n"
                                 + "    }\n"
                                 + "}\n"));
@@ -523,7 +531,7 @@ final class ProjectionSchemaProcessorCompilationTest {
         String generated = generatedSource(compilation, "example.Schema");
         assertTrue(generated.contains("private Batch.Value[] column0;"),
                 generated);
-        assertTrue(generated.contains("public Batch_ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch_ batch()"),
                 generated);
         assertTrue(generated.contains(
                 "public Batch_ value(Batch.Value[] source)"), generated);
@@ -544,7 +552,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "final class Usage {\n"
                         + "    void append("
                         + "Schema__ColumnarProjectionStore store) {\n"
-                        + "        store.batch(1).value(new int[] {1})"
+                        + "        store.batch().value(new int[] {1})"
                         + ".append();\n"
                         + "    }\n"
                         + "}\n");
@@ -554,7 +562,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                 compilation, "Batch.example.Schema");
         assertTrue(generated.contains(
                 "ProjectionStore<Batch.example.Schema>"), generated);
-        assertTrue(generated.contains("public Batch_ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch_ batch()"),
                 generated);
         assertTrue(generated.contains("public final class Batch_"), generated);
     }
@@ -588,7 +596,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                                 + "__ColumnarProjectionStore store,\n"
                                 + "            java.util.Map<Batch.Value[], "
                                 + "? extends Batch_.Value>[] values) {\n"
-                                + "        store.batch(1).values(values)"
+                                + "        store.batch().values(values)"
                                 + ".append();\n"
                                 + "    }\n"
                                 + "}\n"));
@@ -596,7 +604,7 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "example.RootPackageCollisionSchema");
-        assertTrue(generated.contains("public Batch__ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch__ batch()"),
                 generated);
         assertTrue(generated.contains("public final class Batch__"),
                 generated);
@@ -620,13 +628,13 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "final class Usage {\n"
                         + "    void append(Batch__ColumnarProjectionStore "
                         + "store, Batch_[] values) {\n"
-                        + "        store.batch(1).value(values).append();\n"
+                        + "        store.batch().value(values).append();\n"
                         + "    }\n"
                         + "}\n");
 
         assertSucceeded(compilation);
         String generated = generatedSource(compilation, "Batch");
-        assertTrue(generated.contains("public Batch__ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch__ batch()"),
                 generated);
         assertTrue(generated.contains(
                 "public Batch__ value(Batch_[] source)"), generated);
@@ -654,7 +662,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "            EnclosingCollisionSchema__ColumnarProjectionStore store,\n"
                         + "            Owner<Batch>.Inner<String>[] first,\n"
                         + "            Owner<Batch_>.Inner<String>[] second) {\n"
-                        + "        store.batch(1).first(first)"
+                        + "        store.batch().first(first)"
                         + ".second(second);\n"
                         + "    }\n"
                         + "}\n");
@@ -662,7 +670,7 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertSucceeded(compilation);
         String generated = generatedSource(
                 compilation, "EnclosingCollisionSchema");
-        assertTrue(generated.contains("public Batch__ batch(int rowCount)"),
+        assertTrue(generated.contains("public Batch__ batch()"),
                 generated);
         assertTrue(generated.contains("public final class Batch__"), generated);
         assertTrue(generated.contains(
@@ -689,7 +697,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "    void append(\n"
                         + "            GenericBatchSchema__ColumnarProjectionStore store,\n"
                         + "            java.util.ArrayList<String>[] labels) {\n"
-                        + "        store.batch(1).labels(labels);\n"
+                        + "        store.batch().labels(labels);\n"
                         + "    }\n"
                         + "}\n");
 
@@ -715,7 +723,7 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "    void append(\n"
                         + "            GenericBatchSchema__ColumnarProjectionStore store,\n"
                         + "            java.util.ArrayList<Integer>[] labels) {\n"
-                        + "        store.batch(1).labels(labels);\n"
+                        + "        store.batch().labels(labels);\n"
                         + "    }\n"
                         + "}\n");
 
