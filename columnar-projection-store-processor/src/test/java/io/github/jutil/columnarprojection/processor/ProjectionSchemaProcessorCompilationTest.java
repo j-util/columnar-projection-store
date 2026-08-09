@@ -306,7 +306,10 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(batch.contains(
                 "public Batch count(int[] source, int sourceOffset)"), batch);
         assertTrue(batch.contains(
-                "public Batch labels(java.util.List[] source, "
+                "private java.util.List<java.lang.String>[] source1;"),
+                batch);
+        assertTrue(batch.contains(
+                "public Batch labels(java.util.List<java.lang.String>[] source, "
                         + "int sourceOffset)"), batch);
         assertTrue(batch.contains(
                 "public Batch payload(byte[][] source, int sourceOffset)"),
@@ -333,6 +336,133 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(sealedCheck >= 0 && sealedCheck < firstCopy, batch);
         assertTrue(lastCopy < sizeChange, batch);
         assertTrue(sizeChange < sourceClear, batch);
+    }
+
+    @Test
+    void unnamedPackageSchemaNamedBatchUsesCollisionSafeBatchType()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "Batch",
+                "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "public interface Batch {\n"
+                        + "    int value();\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(compilation, "Batch");
+        assertTrue(generated.contains(
+                "implements io.github.jutil.columnarprojection."
+                        + "ProjectionStore<Batch>"), generated);
+        assertTrue(generated.contains("public Batch_ batch(int rowCount)"),
+                generated);
+        assertTrue(generated.contains("public final class Batch_"), generated);
+        assertTrue(generated.contains("private Batch_(int rowCount)"),
+                generated);
+    }
+
+    @Test
+    void unnamedPackageAccessorReturningBatchUsesCollisionSafeBatchType()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "ProjectionReturningBatch",
+                "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "final class Batch { }\n"
+                        + "@ProjectionSchema\n"
+                        + "interface ProjectionReturningBatch {\n"
+                        + "    Batch value();\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "ProjectionReturningBatch");
+        assertTrue(generated.contains("private Batch[] column0;"), generated);
+        assertTrue(generated.contains("public Batch_ batch(int rowCount)"),
+                generated);
+        assertTrue(generated.contains(
+                "public Batch_ value(Batch[] source, int sourceOffset)"),
+                generated);
+        assertTrue(generated.contains("public Batch value()"), generated);
+    }
+
+    @Test
+    void acceptsCompatibleGenericSubtypeArrayForBatchColumn()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.CompatibleGenericBatchUsage",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "interface GenericBatchSchema {\n"
+                        + "    java.util.List<String> labels();\n"
+                        + "}\n"
+                        + "final class CompatibleGenericBatchUsage {\n"
+                        + "    void append(\n"
+                        + "            GenericBatchSchema__ColumnarProjectionStore store,\n"
+                        + "            java.util.ArrayList<String>[] labels) {\n"
+                        + "        store.batch(1).labels(labels, 0);\n"
+                        + "    }\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        assertGeneratedSourceContains(compilation,
+                "example.GenericBatchSchema",
+                "labels(java.util.List<java.lang.String>[] source, "
+                        + "int sourceOffset)");
+    }
+
+    @Test
+    void rejectsIncompatibleGenericSubtypeArrayForBatchColumn()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.IncompatibleGenericBatchUsage",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "@ProjectionSchema\n"
+                        + "interface GenericBatchSchema {\n"
+                        + "    java.util.List<String> labels();\n"
+                        + "}\n"
+                        + "final class IncompatibleGenericBatchUsage {\n"
+                        + "    void append(\n"
+                        + "            GenericBatchSchema__ColumnarProjectionStore store,\n"
+                        + "            java.util.ArrayList<Integer>[] labels) {\n"
+                        + "        store.batch(1).labels(labels, 0);\n"
+                        + "    }\n"
+                        + "}\n");
+
+        assertFailedWith(compilation, "incompatible types");
+    }
+
+    @Test
+    void inaccessibleGenericArgumentsFallBackToErasedBatchColumn()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                "example.GenericFallbackContainer",
+                "package example;\n"
+                        + "import io.github.jutil.columnarprojection."
+                        + "ProjectionSchema;\n"
+                        + "public final class GenericFallbackContainer {\n"
+                        + "    private static final class Hidden { }\n"
+                        + "    @ProjectionSchema\n"
+                        + "    public interface Schema {\n"
+                        + "        java.util.List<Hidden> values();\n"
+                        + "    }\n"
+                        + "}\n");
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(compilation,
+                "example.GenericFallbackContainer$Schema");
+        assertTrue(generated.contains("private java.util.List[] source0;"),
+                generated);
+        assertTrue(generated.contains(
+                "public Batch values(java.util.List[] source, "
+                        + "int sourceOffset)"), generated);
+        assertFalse(generated.contains("GenericFallbackContainer.Hidden"),
+                generated);
     }
 
     @Test

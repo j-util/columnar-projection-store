@@ -12,12 +12,20 @@ This file records user-visible changes to Columnar Projection Store.
   API for appending slices of column arrays with one bulk copy per column.
 - Generated batch APIs cover every supported primitive, reference, inherited,
   covariant, and array-valued projection return type.
+- Parameterized batch columns preserve accessible resolved generic arguments,
+  with an erased compatibility fallback when an argument cannot be named from
+  generated source.
+- Generated batch types use a deterministic collision-safe name for
+  unnamed-package schemas that require a top-level type named `Batch`.
 
 ### Changed
 
 - Generated stores now document their public constructor and typed batch API,
   including validation, ownership, lifecycle, ordering, and complexity
   semantics.
+- API-boundary and growth-complexity documentation now distinguishes supported
+  generated batch entry points from other generated details and accounts for
+  `newCapacity` during large batch growth.
 
 ## 1.1.0 - 2026-08-01
 

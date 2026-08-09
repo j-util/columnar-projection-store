@@ -9,10 +9,11 @@ rows through stable indexed views or allocation-conscious cursors.
 
 Primitive-valued columns use primitive arrays. Reference-valued columns use
 arrays of the accessors' erased return types and keep references, including
-`null`; referenced objects are not copied or flattened. The application-facing
-API is in
-`io.github.jutil.columnarprojection`. The library has no runtime dependencies
-and targets Java 8.
+`null`; referenced objects are not copied or flattened. The runtime
+abstractions and factory live in `io.github.jutil.columnarprojection`. The
+processor generates the supported concrete store constructor and typed batch
+API into the schema package; all other generated implementation details are
+unsupported. The library has no runtime dependencies and targets Java 8.
 
 ## Status and installation
 
@@ -146,9 +147,11 @@ public final class OrderExample {
 ```
 
 For row-oriented use, prefer `ProjectionStores.create`. The generated concrete
-store, its public constructor, and its generated `batch` and `Batch` elements
-form the type-safe batch API. Other generated implementation details, such as
-backing fields and view classes, are not supported API.
+store's public constructor and its generated `batch` method and returned batch
+type form the supported type-safe batch API in the schema package. Runtime
+abstractions remain in `io.github.jutil.columnarprojection`. Other generated
+implementation details, such as backing fields and view classes, are not
+supported API.
 
 ## Typed batch append
 
@@ -166,6 +169,21 @@ store.batch(rowCount)
         .lastTradePrice(prices, priceOffset)
         .append();
 ```
+
+The returned nested type is ordinarily named `Batch`. If that name would
+shadow a required type from an unnamed-package schema, the processor chooses a
+deterministic collision-safe name by appending underscores. Chained use through
+`batch(...)`, as above, does not require callers to spell the nested type name.
+
+For a parameterized accessor, a batch column preserves the resolved declared
+return type whenever every part of that type can legally be named from the
+generated store. For example, `List<String> labels()` produces a column method
+accepting `List<String>[]`; an `ArrayList<String>[]` is compatible while an
+`ArrayList<Integer>[]` is rejected at compilation. Backing columns still use
+erased, reifiable arrays such as `List[]`. If a generic argument is inaccessible
+to the generated top-level class, the batch column also falls back to the
+erased array type. This fallback preserves schemas accepted by earlier
+versions, but necessarily loses generic argument checking for that column.
 
 Each column method selects `rowCount` values beginning at its independent
 offset. The source must be non-null, the offset must be non-negative, and the
@@ -274,30 +292,38 @@ inherited accessors are resolved in the annotated schema's type context.
 
 ## Complexity and storage
 
-Let `c` be the number of stored accessors, `r` the current row count, and `a`
-the total number of initially allocated column slots implied by
-`expectedSize`. The bounds below describe store overhead; they exclude work
-performed inside user-written accessor bodies and one-time JVM class loading.
+Let `c` be the number of stored accessors, `r` the current row count,
+`capacity` the current per-column backing-array length, and `newCapacity` its
+length after a growth step. The bounds below describe store overhead; they
+exclude work performed inside user-written accessor bodies and one-time JVM
+class loading.
 
 | Operation | Time |
 | --- | --- |
-| `ProjectionStores.create` | `O(c + a)` |
-| `add` | Amortized `O(c)`; a growth step is `O(c * r)` |
+| `ProjectionStores.create` | `O(c * (capacity + 1))` for the requested initial capacity |
+| `add` | Amortized `O(c)`; a growth step is `O(c * newCapacity)` |
 | Generated `batch` construction | `O(c)` |
 | A batch column assignment | `O(1)` |
-| Batch `append` | `O(c * (rowCount + 1))`; a growth step adds `O(c * r)` |
+| Batch `append` | Without growth, `O(c * (rowCount + 1))`; with growth, `O(c * (newCapacity + rowCount + 1))` |
 | `size`, `seal`, `cursor`, `viewAt` | `O(1)` |
 | Cursor `moveNext`, `current`, `rewind` | `O(1)` |
 | A generated projection accessor | `O(1)` |
 
 The retained column storage is `O(c * capacity)` array slots. Growth can
-temporarily require another `O(c * r)` slots while existing columns are copied.
+temporarily require another `O(c * newCapacity)` slots while existing columns
+of length `capacity` are copied. At the peak, both generations can be live, for
+`O(c * (capacity + newCapacity))` backing-array slots. This includes a large
+batch that makes `newCapacity` jump from `capacity` to at least
+`r + rowCount`; its temporary growth storage is not bounded by `O(c * r)`.
 `expectedSize` can avoid those copies when the eventual row count is known, but
 it allocates that initial capacity for every column.
 
 For a positive batch, append time is linear in the total number of copied
-values (`c * rowCount`). An unfinished batch temporarily retains one source
-array reference and offset per column until it is successfully appended.
+values (`c * rowCount`) in addition to any growth work. An unfinished batch
+retains one source-array reference and offset per column until it is
+successfully appended; because caller-owned source arrays may be longer than
+`rowCount`, the amount of source storage kept reachable is not bounded by
+`rowCount`.
 
 ## Thread safety
 
@@ -318,7 +344,10 @@ make mutable referenced objects immutable or thread-safe.
   serialized.
 - Annotation processing is required; there is no reflective or dynamic-proxy
   storage fallback.
-- Generated public classes are unsupported implementation details.
+- Runtime abstractions are supported only in
+  `io.github.jutil.columnarprojection`. In each schema package, the generated
+  concrete store constructor and typed batch API are also supported; all other
+  generated implementation details are unsupported.
 - V1 makes no explicit JPMS or native-image compatibility guarantee.
 - Query planning, indexing, filtering, aggregation, schema migration, and
   durability are outside the V1 scope.

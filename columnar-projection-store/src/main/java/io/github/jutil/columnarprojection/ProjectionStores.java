@@ -7,10 +7,13 @@ import java.util.Objects;
 /**
  * Creates generated {@link ProjectionStore projection stores}.
  *
- * <p>The implementation for a projection schema is generated when the schema
- * is compiled. Applications normally interact only with this factory and the
- * public store abstractions; generated implementation classes are not part of
- * the supported API.
+ * <p>The runtime abstractions and this factory live in
+ * {@code io.github.jutil.columnarprojection}. The implementation for a
+ * projection schema is generated into the schema package when that schema is
+ * compiled. Applications normally use this factory for row-oriented access.
+ * The generated concrete store's public constructor and typed batch API are
+ * also supported API; all other generated implementation details are
+ * unsupported.
  */
 public final class ProjectionStores {
 

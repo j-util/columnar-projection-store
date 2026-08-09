@@ -15,6 +15,8 @@ import javax.annotation.processing.ProcessingEnvironment;
 import javax.annotation.processing.RoundEnvironment;
 import javax.annotation.processing.SupportedAnnotationTypes;
 import javax.lang.model.SourceVersion;
+import javax.lang.model.element.AnnotationMirror;
+import javax.lang.model.element.AnnotationValue;
 import javax.lang.model.element.Element;
 import javax.lang.model.element.ElementKind;
 import javax.lang.model.element.ExecutableElement;
@@ -22,11 +24,13 @@ import javax.lang.model.element.Modifier;
 import javax.lang.model.element.NestingKind;
 import javax.lang.model.element.PackageElement;
 import javax.lang.model.element.TypeElement;
+import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.ArrayType;
 import javax.lang.model.type.DeclaredType;
 import javax.lang.model.type.ExecutableType;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
+import javax.lang.model.type.WildcardType;
 import javax.lang.model.util.Elements;
 import javax.lang.model.util.Types;
 import javax.tools.Diagnostic;
@@ -359,8 +363,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             }
             accessors.add(new Accessor(
                     representative.element.getSimpleName().toString(),
+                    returnType,
                     erasedReturnType,
-                    sourceType(erasedReturnType)));
+                    isSourceNameable(returnType, generatedPackage)));
         }
 
         if (!hasEffectiveAbstractAccessor) {
@@ -468,7 +473,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private boolean isAccessible(
             TypeMirror type, PackageElement generatedPackage) {
-        if (type.getKind().isPrimitive()) {
+        if (type.getKind().isPrimitive()
+                || type.getKind() == TypeKind.VOID) {
             return true;
         }
         if (type.getKind() == TypeKind.ARRAY) {
@@ -482,6 +488,11 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
         TypeElement typeElement =
                 (TypeElement) ((DeclaredType) type).asElement();
+        return isAccessible(typeElement, generatedPackage);
+    }
+
+    private boolean isAccessible(
+            TypeElement typeElement, PackageElement generatedPackage) {
         boolean samePackage = elements.getPackageOf(typeElement)
                 .getQualifiedName()
                 .contentEquals(generatedPackage.getQualifiedName());
@@ -495,6 +506,108 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 return false;
             }
             current = current.getEnclosingElement();
+        }
+        return true;
+    }
+
+    private boolean isSourceNameable(
+            TypeMirror type, PackageElement generatedPackage) {
+        if (!areAnnotationsAccessible(type, generatedPackage)) {
+            return false;
+        }
+        if (type.getKind().isPrimitive()
+                || type.getKind() == TypeKind.VOID) {
+            return true;
+        }
+        if (type.getKind() == TypeKind.ARRAY) {
+            return isSourceNameable(
+                    ((ArrayType) type).getComponentType(), generatedPackage);
+        }
+        if (type.getKind() == TypeKind.WILDCARD) {
+            WildcardType wildcard = (WildcardType) type;
+            TypeMirror extendsBound = wildcard.getExtendsBound();
+            TypeMirror superBound = wildcard.getSuperBound();
+            return (extendsBound == null
+                            || isSourceNameable(extendsBound, generatedPackage))
+                    && (superBound == null
+                            || isSourceNameable(superBound, generatedPackage));
+        }
+        if (type.getKind() != TypeKind.DECLARED
+                && type.getKind() != TypeKind.ERROR) {
+            return false;
+        }
+
+        DeclaredType declaredType = (DeclaredType) type;
+        TypeElement typeElement = (TypeElement) declaredType.asElement();
+        if (!isAccessible(typeElement, generatedPackage)) {
+            return false;
+        }
+        TypeMirror enclosingType = declaredType.getEnclosingType();
+        if (enclosingType.getKind() != TypeKind.NONE
+                && !isSourceNameable(enclosingType, generatedPackage)) {
+            return false;
+        }
+        for (TypeMirror argument : declaredType.getTypeArguments()) {
+            if (!isSourceNameable(argument, generatedPackage)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean areAnnotationsAccessible(
+            TypeMirror type, PackageElement generatedPackage) {
+        for (AnnotationMirror annotation : type.getAnnotationMirrors()) {
+            if (!isSourceNameable(annotation, generatedPackage)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isSourceNameable(
+            AnnotationMirror annotation,
+            PackageElement generatedPackage) {
+        TypeElement annotationType = (TypeElement) annotation
+                .getAnnotationType().asElement();
+        if (!isAccessible(annotationType, generatedPackage)) {
+            return false;
+        }
+        for (AnnotationValue value : annotation.getElementValues().values()) {
+            if (!isSourceNameable(value, generatedPackage)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private boolean isSourceNameable(
+            AnnotationValue annotationValue,
+            PackageElement generatedPackage) {
+        Object value = annotationValue.getValue();
+        if (value instanceof TypeMirror) {
+            return isSourceNameable((TypeMirror) value, generatedPackage);
+        }
+        if (value instanceof VariableElement) {
+            Element enclosing = ((VariableElement) value)
+                    .getEnclosingElement();
+            return !(enclosing instanceof TypeElement)
+                    || isAccessible(
+                            (TypeElement) enclosing, generatedPackage);
+        }
+        if (value instanceof AnnotationMirror) {
+            return isSourceNameable(
+                    (AnnotationMirror) value, generatedPackage);
+        }
+        if (value instanceof List<?>) {
+            for (Object item : (List<?>) value) {
+                if (item instanceof AnnotationValue
+                        && !isSourceNameable(
+                                (AnnotationValue) item,
+                                generatedPackage)) {
+                    return false;
+                }
+            }
         }
         return true;
     }
@@ -521,6 +634,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 .getQualifiedName().toString();
         String schemaName = schema.getQualifiedName().toString();
         String generatedSimpleName = generatedSimpleName(schema);
+        String batchTypeName = batchTypeName(schema, accessors);
         StringBuilder source = new StringBuilder(8192);
         if (packageName.length() != 0) {
             line(source, "package " + packageName + ";");
@@ -537,6 +651,12 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "After sealing and safe publication, reads follow the "
                 + "thread-safety contract of {@link io.github.jutil."
                 + "columnarprojection.ProjectionStore}.");
+        line(source, " *");
+        line(source, " * <p>The supported generated API is this class's "
+                + "public constructor and its typed {@code batch} API. "
+                + "Runtime abstractions remain in {@code io.github.jutil."
+                + "columnarprojection}; all other generated implementation "
+                + "details are unsupported.");
         line(source, " */");
         line(source, "@java.lang.SuppressWarnings({\"unchecked\", \"rawtypes\"})");
         line(source, "public final class " + generatedSimpleName);
@@ -547,16 +667,17 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "    private int capacity;");
         line(source, "    private boolean sealed;");
         for (int index = 0; index < accessors.size(); index++) {
-            line(source, "    private " + columnType(accessors.get(index))
+            line(source, "    private "
+                    + storageColumnType(accessors.get(index))
                     + " column" + index + ";");
         }
         line(source, "");
         appendConstructor(source, generatedSimpleName, accessors);
-        appendBatchFactory(source);
+        appendBatchFactory(source, batchTypeName);
         appendAdd(source, schemaName, accessors);
         appendStoreMethods(source, schemaName);
         appendEnsureCapacity(source, accessors);
-        appendBatch(source, accessors);
+        appendBatch(source, accessors, batchTypeName);
         appendProjectionView(source, schemaName, accessors);
         appendCursor(source, schemaName);
         line(source, "}");
@@ -595,13 +716,15 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "");
     }
 
-    private void appendBatchFactory(StringBuilder source) {
+    private void appendBatchFactory(
+            StringBuilder source, String batchTypeName) {
         line(source, "    /**");
         line(source, "     * Starts a typed column batch for {@code rowCount} "
                 + "rows.");
         line(source, "     *");
         line(source, "     * <p>The returned batch retains each supplied "
-                + "source array until its {@link Batch#append()} method "
+                + "source array until its {@link " + batchTypeName
+                + "#append()} method "
                 + "successfully copies the selected slices.");
         line(source, "     * Batch mutation is not thread-safe.");
         line(source, "     *");
@@ -613,7 +736,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "     * @throws java.lang.IllegalStateException if this "
                 + "store has been sealed");
         line(source, "     */");
-        line(source, "    public Batch batch(int rowCount) {");
+        line(source, "    public " + batchTypeName
+                + " batch(int rowCount) {");
         line(source, "        if (sealed) {");
         line(source, "            throw new java.lang.IllegalStateException("
                 + "\"Store has been sealed\");");
@@ -623,7 +747,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "                    \"rowCount must be greater than or "
                 + "equal to zero\");");
         line(source, "        }");
-        line(source, "        return new Batch(rowCount);");
+        line(source, "        return new " + batchTypeName + "(rowCount);");
         line(source, "    }");
         line(source, "");
     }
@@ -649,7 +773,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        }");
         for (int index = 0; index < accessors.size(); index++) {
             Accessor accessor = accessors.get(index);
-            line(source, "        final " + accessor.sourceReturnType
+            line(source, "        final " + storageComponentType(accessor)
                     + " value" + index
                     + " = projection." + accessor.name + "();");
         }
@@ -723,7 +847,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "            newCapacity = minimumCapacity;");
         line(source, "        }");
         for (int index = 0; index < accessors.size(); index++) {
-            line(source, "        final " + columnType(accessors.get(index))
+            line(source, "        final "
+                    + storageColumnType(accessors.get(index))
                     + " grownColumn" + index
                     + " = java.util.Arrays.copyOf(column" + index
                     + ", newCapacity);");
@@ -738,7 +863,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private void appendBatch(
-            StringBuilder source, List<Accessor> accessors) {
+            StringBuilder source,
+            List<Accessor> accessors,
+            String batchTypeName) {
         line(source, "    /**");
         line(source, "     * A one-use, store-specific batch of typed column "
                 + "slices.");
@@ -758,22 +885,25 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "at the store size at execution time. Batch mutation is not "
                 + "thread-safe.");
         line(source, "     */");
-        line(source, "    public final class Batch {");
+        line(source, "    public final class " + batchTypeName + " {");
         line(source, "        private final int rowCount;");
         line(source, "        private boolean consumed;");
         for (int index = 0; index < accessors.size(); index++) {
-            line(source, "        private " + columnType(accessors.get(index))
+            line(source, "        private "
+                    + batchSourceColumnType(accessors.get(index))
                     + " source" + index + ";");
             line(source, "        private int sourceOffset" + index + ";");
             line(source, "        private boolean assigned" + index + ";");
         }
         line(source, "");
-        line(source, "        private Batch(int rowCount) {");
+        line(source, "        private " + batchTypeName
+                + "(int rowCount) {");
         line(source, "            this.rowCount = rowCount;");
         line(source, "        }");
 
         for (int index = 0; index < accessors.size(); index++) {
-            appendBatchColumnMethod(source, accessors.get(index), index);
+            appendBatchColumnMethod(source, accessors.get(index), index,
+                    batchTypeName);
         }
 
         line(source, "");
@@ -785,8 +915,13 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "not require column assignments. The destination position "
                 + "is the store size when this method executes.");
         line(source, "         * For a positive batch, execution time is "
-                + "linear in the total number of copied values, plus any "
-                + "required column-capacity growth.");
+                + "{@code O(c * rowCount)} for {@code c} columns without "
+                + "growth. If capacity grows to {@code newCapacity}, growth "
+                + "also takes {@code O(c * newCapacity)} time and temporarily "
+                + "allocates {@code O(c * newCapacity)} additional backing "
+                + "array slots. At peak, the old {@code capacity} and new "
+                + "arrays occupy {@code O(c * (capacity + newCapacity))} "
+                + "backing slots.");
         line(source, "         *");
         line(source, "         * @throws java.lang.IllegalStateException if a "
                 + "positive batch is missing a column, this batch has already "
@@ -842,7 +977,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private void appendBatchColumnMethod(
-            StringBuilder source, Accessor accessor, int index) {
+            StringBuilder source,
+            Accessor accessor,
+            int index,
+            String batchTypeName) {
         line(source, "");
         line(source, "        /**");
         line(source, "         * Supplies the {@code " + accessor.name
@@ -863,8 +1001,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "this column was already supplied or this batch was "
                 + "successfully appended");
         line(source, "         */");
-        line(source, "        public Batch " + accessor.name + "("
-                + columnType(accessor)
+        line(source, "        public " + batchTypeName + " "
+                + accessor.name + "("
+                + batchSourceColumnType(accessor)
                 + " source, int sourceOffset) {");
         line(source, "            requireUnconsumed();");
         line(source, "            if (assigned" + index + ") {");
@@ -909,7 +1048,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             Accessor accessor = accessors.get(index);
             line(source, "");
             line(source, "        @java.lang.Override");
-            line(source, "        public " + accessor.sourceReturnType + " "
+            line(source, "        public " + storageComponentType(accessor)
+                    + " "
                     + accessor.name + "() {");
             line(source, "            return column" + index
                     + "[rowIndex];");
@@ -960,12 +1100,19 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "    }");
     }
 
-    private String columnType(Accessor accessor) {
-        return columnComponentType(accessor) + "[]";
+    private String storageColumnType(Accessor accessor) {
+        return storageComponentType(accessor) + "[]";
     }
 
-    private String columnComponentType(Accessor accessor) {
-        return accessor.sourceReturnType;
+    private String storageComponentType(Accessor accessor) {
+        return sourceType(accessor.erasedReturnType);
+    }
+
+    private String batchSourceColumnType(Accessor accessor) {
+        TypeMirror componentType = accessor.declaredReturnTypeNameable
+                ? accessor.declaredReturnType
+                : accessor.erasedReturnType;
+        return sourceType(componentType) + "[]";
     }
 
     private String newColumnArray(Accessor accessor, String lengthExpression) {
@@ -986,6 +1133,106 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private String sourceType(TypeMirror type) {
         return type.toString();
+    }
+
+    private String batchTypeName(
+            TypeElement schema, List<Accessor> accessors) {
+        Set<String> unavailableNames = new LinkedHashSet<String>();
+        addUnnamedTopLevelTypeName(schema, unavailableNames);
+        for (Accessor accessor : accessors) {
+            collectUnnamedTopLevelTypeNames(
+                    accessor.erasedReturnType, unavailableNames);
+            if (accessor.declaredReturnTypeNameable) {
+                collectUnnamedTopLevelTypeNames(
+                        accessor.declaredReturnType, unavailableNames);
+            }
+        }
+
+        String name = "Batch";
+        while (unavailableNames.contains(name)) {
+            name += "_";
+        }
+        return name;
+    }
+
+    private void collectUnnamedTopLevelTypeNames(
+            TypeMirror type, Set<String> names) {
+        for (AnnotationMirror annotation : type.getAnnotationMirrors()) {
+            collectUnnamedTopLevelTypeNames(annotation, names);
+        }
+        if (type.getKind() == TypeKind.ARRAY) {
+            collectUnnamedTopLevelTypeNames(
+                    ((ArrayType) type).getComponentType(), names);
+            return;
+        }
+        if (type.getKind() == TypeKind.WILDCARD) {
+            WildcardType wildcard = (WildcardType) type;
+            if (wildcard.getExtendsBound() != null) {
+                collectUnnamedTopLevelTypeNames(
+                        wildcard.getExtendsBound(), names);
+            }
+            if (wildcard.getSuperBound() != null) {
+                collectUnnamedTopLevelTypeNames(
+                        wildcard.getSuperBound(), names);
+            }
+            return;
+        }
+        if (type.getKind() != TypeKind.DECLARED
+                && type.getKind() != TypeKind.ERROR) {
+            return;
+        }
+
+        DeclaredType declaredType = (DeclaredType) type;
+        addUnnamedTopLevelTypeName(
+                (TypeElement) declaredType.asElement(), names);
+        for (TypeMirror argument : declaredType.getTypeArguments()) {
+            collectUnnamedTopLevelTypeNames(argument, names);
+        }
+    }
+
+    private void collectUnnamedTopLevelTypeNames(
+            AnnotationMirror annotation, Set<String> names) {
+        addUnnamedTopLevelTypeName(
+                (TypeElement) annotation.getAnnotationType().asElement(),
+                names);
+        for (AnnotationValue value : annotation.getElementValues().values()) {
+            collectUnnamedTopLevelTypeNames(value, names);
+        }
+    }
+
+    private void collectUnnamedTopLevelTypeNames(
+            AnnotationValue annotationValue, Set<String> names) {
+        Object value = annotationValue.getValue();
+        if (value instanceof TypeMirror) {
+            collectUnnamedTopLevelTypeNames((TypeMirror) value, names);
+        } else if (value instanceof VariableElement) {
+            Element enclosing = ((VariableElement) value)
+                    .getEnclosingElement();
+            if (enclosing instanceof TypeElement) {
+                addUnnamedTopLevelTypeName((TypeElement) enclosing, names);
+            }
+        } else if (value instanceof AnnotationMirror) {
+            collectUnnamedTopLevelTypeNames(
+                    (AnnotationMirror) value, names);
+        } else if (value instanceof List<?>) {
+            for (Object item : (List<?>) value) {
+                if (item instanceof AnnotationValue) {
+                    collectUnnamedTopLevelTypeNames(
+                            (AnnotationValue) item, names);
+                }
+            }
+        }
+    }
+
+    private void addUnnamedTopLevelTypeName(
+            TypeElement type, Set<String> names) {
+        Element topLevel = type;
+        while (topLevel.getEnclosingElement() instanceof TypeElement) {
+            topLevel = topLevel.getEnclosingElement();
+        }
+        if (elements.getPackageOf(topLevel).isUnnamed()) {
+            names.add(topLevel.getSimpleName().toString());
+        }
     }
 
     private void error(Element element, String message) {
@@ -1014,16 +1261,19 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static final class Accessor {
         private final String name;
+        private final TypeMirror declaredReturnType;
         private final TypeMirror erasedReturnType;
-        private final String sourceReturnType;
+        private final boolean declaredReturnTypeNameable;
 
         private Accessor(
                 String name,
+                TypeMirror declaredReturnType,
                 TypeMirror erasedReturnType,
-                String sourceReturnType) {
+                boolean declaredReturnTypeNameable) {
             this.name = name;
+            this.declaredReturnType = declaredReturnType;
             this.erasedReturnType = erasedReturnType;
-            this.sourceReturnType = sourceReturnType;
+            this.declaredReturnTypeNameable = declaredReturnTypeNameable;
         }
     }
 }
