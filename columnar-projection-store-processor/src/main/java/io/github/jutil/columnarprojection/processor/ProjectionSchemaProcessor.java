@@ -55,6 +55,10 @@ import javax.tools.JavaFileObject;
  * conflicts may add trailing underscores. The generated concrete store
  * constructor remains supported for direct construction; all other generated
  * implementation details are unsupported.
+ *
+ * <p>One compiler invocation may contain source roots from at most one named
+ * or unnamed module. Compile multiple source modules in separate compiler
+ * invocations.
  */
 @SupportedAnnotationTypes(
         "io.github.jutil.columnarprojection.ProjectionSchema")
@@ -69,6 +73,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     private static final String PROVENANCE_ROLE_CONTRACT = "contract";
     private static final String PROVENANCE_ROLE_IMPLEMENTATION =
             "implementation";
+    private static final String MULTI_SOURCE_MODULE_MESSAGE =
+            "ProjectionSchemaProcessor supports exactly one source module "
+                    + "per compiler invocation; multiple source modules were "
+                    + "found. Compile each module separately.";
     private static final int BATCH_HELPER_COLUMN_LIMIT = 128;
 
     private Elements elements;
@@ -87,6 +95,10 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             new LinkedHashMap<String, TypeElement>();
     private final Set<String> observedPackagePrefixes =
             new LinkedHashSet<String>();
+    private final Set<Element> sourceModules =
+            new LinkedHashSet<Element>();
+    private boolean projectionSchemaSeen;
+    private boolean multipleSourceModulesReported;
 
     /**
      * Creates a processor. Compiler service discovery uses this constructor.
@@ -137,7 +149,24 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         if (projectionSchemaType == null) {
             return false;
         }
+        if (multipleSourceModulesReported) {
+            return true;
+        }
+        Set<? extends Element> schemaElements = roundEnvironment
+                .getElementsAnnotatedWith(projectionSchemaType);
+        if (!schemaElements.isEmpty()) {
+            projectionSchemaSeen = true;
+        }
+        collectSourceModules(roundEnvironment.getRootElements());
+        if (projectionSchemaSeen && sourceModules.size() > 1) {
+            messager.printMessage(
+                    Diagnostic.Kind.ERROR, MULTI_SOURCE_MODULE_MESSAGE);
+            multipleSourceModulesReported = true;
+            return true;
+        }
+
         List<TypeElement> rootTypes = new ArrayList<TypeElement>();
+        List<Element> metadataRoots = new ArrayList<Element>();
         for (Element root : roundEnvironment.getRootElements()) {
             if (root instanceof TypeElement) {
                 TypeElement rootType = (TypeElement) root;
@@ -146,15 +175,26 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 collectDeclaredTypes(rootType);
             } else if (root instanceof PackageElement) {
                 recordPackagePrefixes((PackageElement) root);
+                metadataRoots.add(root);
+            } else {
+                metadataRoots.add(root);
+                for (Element enclosed : root.getEnclosedElements()) {
+                    if (enclosed instanceof PackageElement) {
+                        recordPackagePrefixes((PackageElement) enclosed);
+                    }
+                }
             }
         }
         for (TypeElement rootType : rootTypes) {
             collectDeclarationPackagePrefixes(rootType);
         }
+        for (Element metadataRoot : metadataRoots) {
+            collectElementAnnotationPackagePrefixes(
+                    metadataRoot, new PackagePrefixTraversalPath());
+        }
         List<PreparedSchema> preparedSchemas =
                 new ArrayList<PreparedSchema>();
-        for (Element element : roundEnvironment
-                .getElementsAnnotatedWith(projectionSchemaType)) {
+        for (Element element : schemaElements) {
             PreparedSchema preparedSchema = prepareSchema(element);
             if (preparedSchema != null) {
                 preparedSchemas.add(preparedSchema);
@@ -167,6 +207,34 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             processSchema(preparedSchema);
         }
         return true;
+    }
+
+    private void collectSourceModules(Set<? extends Element> roots) {
+        for (Element root : roots) {
+            if (root instanceof TypeElement) {
+                collectSourceModule(elements.getPackageOf(root));
+            } else if (root instanceof PackageElement) {
+                collectSourceModule((PackageElement) root);
+            } else {
+                boolean packageFound = false;
+                for (Element enclosed : root.getEnclosedElements()) {
+                    if (enclosed instanceof PackageElement) {
+                        collectSourceModule((PackageElement) enclosed);
+                        packageFound = true;
+                    }
+                }
+                if (!packageFound
+                        && "MODULE".equals(root.getKind().name())) {
+                    sourceModules.add(root);
+                }
+            }
+        }
+    }
+
+    private void collectSourceModule(PackageElement packageElement) {
+        if (packageElement != null) {
+            sourceModules.add(packageElement.getEnclosingElement());
+        }
     }
 
     private PreparedSchema prepareSchema(Element element) {
@@ -210,7 +278,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private void collectAccessorPackagePrefixes(List<Accessor> accessors) {
-        TypeTraversalPath traversal = new TypeTraversalPath();
+        PackagePrefixTraversalPath traversal =
+                new PackagePrefixTraversalPath();
         for (Accessor accessor : accessors) {
             collectTypePackagePrefixes(
                     accessor.declaredReturnType, traversal);
@@ -234,7 +303,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
     }
 
     private void collectDeclarationPackagePrefixes(TypeElement type) {
-        TypeTraversalPath traversal = new TypeTraversalPath();
+        collectDeclarationPackagePrefixes(
+                type, new PackagePrefixTraversalPath());
+    }
+
+    private void collectDeclarationPackagePrefixes(
+            TypeElement type,
+            PackagePrefixTraversalPath traversal) {
+        collectElementAnnotationPackagePrefixes(type, traversal);
         collectTypeParameterPackagePrefixes(
                 type.getTypeParameters(), traversal);
         collectTypePackagePrefixes(type.getSuperclass(), traversal);
@@ -244,11 +320,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
         for (Element enclosed : type.getEnclosedElements()) {
             if (enclosed instanceof TypeElement) {
-                collectDeclarationPackagePrefixes((TypeElement) enclosed);
+                collectDeclarationPackagePrefixes(
+                        (TypeElement) enclosed, traversal);
             } else if (enclosed instanceof ExecutableElement) {
                 collectExecutablePackagePrefixes(
                         (ExecutableElement) enclosed, traversal);
             } else {
+                collectElementAnnotationPackagePrefixes(
+                        enclosed, traversal);
                 collectTypePackagePrefixes(enclosed.asType(), traversal);
             }
         }
@@ -256,30 +335,106 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private void collectExecutablePackagePrefixes(
             ExecutableElement executable,
-            TypeTraversalPath traversal) {
+            PackagePrefixTraversalPath traversal) {
+        collectElementAnnotationPackagePrefixes(executable, traversal);
         collectTypeParameterPackagePrefixes(
                 executable.getTypeParameters(), traversal);
         collectTypePackagePrefixes(executable.getReturnType(), traversal);
+        collectTypePackagePrefixes(executable.getReceiverType(), traversal);
         for (VariableElement parameter : executable.getParameters()) {
+            collectElementAnnotationPackagePrefixes(parameter, traversal);
             collectTypePackagePrefixes(parameter.asType(), traversal);
         }
         for (TypeMirror thrownType : executable.getThrownTypes()) {
             collectTypePackagePrefixes(thrownType, traversal);
         }
+        AnnotationValue defaultValue = executable.getDefaultValue();
+        if (defaultValue != null) {
+            collectAnnotationValuePackagePrefixes(defaultValue, traversal);
+        }
     }
 
     private void collectTypeParameterPackagePrefixes(
             List<? extends TypeParameterElement> parameters,
-            TypeTraversalPath traversal) {
+            PackagePrefixTraversalPath traversal) {
         for (TypeParameterElement parameter : parameters) {
+            collectElementAnnotationPackagePrefixes(parameter, traversal);
+            collectTypePackagePrefixes(parameter.asType(), traversal);
             for (TypeMirror bound : parameter.getBounds()) {
                 collectTypePackagePrefixes(bound, traversal);
             }
         }
     }
 
+    private void collectElementAnnotationPackagePrefixes(
+            Element element,
+            PackagePrefixTraversalPath traversal) {
+        collectAnnotationPackagePrefixes(
+                element.getAnnotationMirrors(), traversal);
+    }
+
+    private void collectAnnotationPackagePrefixes(
+            List<? extends AnnotationMirror> annotations,
+            PackagePrefixTraversalPath traversal) {
+        for (AnnotationMirror annotation : annotations) {
+            collectAnnotationPackagePrefixes(annotation, traversal);
+        }
+    }
+
+    private void collectAnnotationPackagePrefixes(
+            AnnotationMirror annotation,
+            PackagePrefixTraversalPath traversal) {
+        if (!traversal.enter(annotation)) {
+            return;
+        }
+        try {
+            collectTypePackagePrefixes(
+                    annotation.getAnnotationType(), traversal);
+            for (AnnotationValue value
+                    : annotation.getElementValues().values()) {
+                collectAnnotationValuePackagePrefixes(value, traversal);
+            }
+        } finally {
+            traversal.exit(annotation);
+        }
+    }
+
+    private void collectAnnotationValuePackagePrefixes(
+            AnnotationValue annotationValue,
+            PackagePrefixTraversalPath traversal) {
+        if (!traversal.enter(annotationValue)) {
+            return;
+        }
+        try {
+            Object value = annotationValue.getValue();
+            if (value instanceof TypeMirror) {
+                collectTypePackagePrefixes(
+                        (TypeMirror) value, traversal);
+            } else if (value instanceof VariableElement) {
+                collectTypePackagePrefixes(
+                        ((VariableElement) value).asType(), traversal);
+            } else if (value instanceof AnnotationMirror) {
+                collectAnnotationPackagePrefixes(
+                        (AnnotationMirror) value, traversal);
+            } else if (value instanceof List<?>) {
+                for (Object item : (List<?>) value) {
+                    if (item instanceof AnnotationValue) {
+                        collectAnnotationValuePackagePrefixes(
+                                (AnnotationValue) item, traversal);
+                    }
+                }
+            }
+        } finally {
+            traversal.exit(annotationValue);
+        }
+    }
+
     private void collectTypePackagePrefixes(
-            TypeMirror type, TypeTraversalPath traversal) {
+            TypeMirror type,
+            PackagePrefixTraversalPath traversal) {
+        if (type == null) {
+            return;
+        }
         if (type.getKind() == TypeKind.DECLARED
                 || type.getKind() == TypeKind.ERROR) {
             Element declaredElement = ((DeclaredType) type).asElement();
@@ -288,10 +443,12 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                         (TypeElement) declaredElement));
             }
         }
-        if (!traversal.enter(type)) {
+        if (!traversal.types.enter(type)) {
             return;
         }
         try {
+            collectAnnotationPackagePrefixes(
+                    type.getAnnotationMirrors(), traversal);
             if (type.getKind() == TypeKind.ARRAY) {
                 collectTypePackagePrefixes(
                         ((ArrayType) type).getComponentType(), traversal);
@@ -338,7 +495,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 collectTypePackagePrefixes(argument, traversal);
             }
         } finally {
-            traversal.exit(type);
+            traversal.types.exit(type);
         }
     }
 
@@ -2423,6 +2580,32 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
 
     private static void line(StringBuilder source, String value) {
         source.append(value).append('\n');
+    }
+
+    private static final class PackagePrefixTraversalPath {
+        private final TypeTraversalPath types = new TypeTraversalPath();
+        private final Set<AnnotationMirror> activeAnnotations =
+                Collections.newSetFromMap(
+                        new IdentityHashMap<AnnotationMirror, Boolean>());
+        private final Set<AnnotationValue> activeAnnotationValues =
+                Collections.newSetFromMap(
+                        new IdentityHashMap<AnnotationValue, Boolean>());
+
+        private boolean enter(AnnotationMirror annotation) {
+            return activeAnnotations.add(annotation);
+        }
+
+        private void exit(AnnotationMirror annotation) {
+            activeAnnotations.remove(annotation);
+        }
+
+        private boolean enter(AnnotationValue value) {
+            return activeAnnotationValues.add(value);
+        }
+
+        private void exit(AnnotationValue value) {
+            activeAnnotationValues.remove(value);
+        }
     }
 
     private static final class TypeTraversalPath {

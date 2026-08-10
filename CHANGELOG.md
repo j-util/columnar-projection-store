@@ -35,37 +35,55 @@ This file records user-visible changes to Columnar Projection Store.
   annotations. An erased compatibility fallback applies when an argument
   cannot be named from generated source.
 - Generated batch types use a deterministic collision-safe name whenever
-  `Batch`, `Batch_`, or a later candidate would shadow an observable
-  named-package root or unnamed-package top-level type required by generated
-  source.
+  `Batch`, `Batch_`, or a later candidate would shadow a named-package root
+  detected through the supported inputs below or an unnamed-package top-level
+  type required by generated source.
 - Generated store-contract names append underscores when their ordinary or
-  later candidates are observable packages or would shadow a type root required
-  by generated source. Thus observable packages named `example.SchemaStore` and
-  `example.SchemaStore_` make `example.Schema` generate `SchemaStore__`.
+  later candidates are packages detected through those inputs or would shadow a
+  type root required by generated source. Thus detected packages named
+  `example.SchemaStore` and `example.SchemaStore_` make `example.Schema`
+  generate `SchemaStore__`.
 - Private batch-implementation names use the deterministic underscore rule when
   their ordinary names would shadow a type root required by generated source.
 - Generated store-contract, implementation, and private batch-implementation
   names are collision-checked; conflicts produce compiler diagnostics instead
   of silently skipping or overwriting types.
-- Before selecting generated top-level names, package detection now reserves
-  every ancestor prefix of each current-source root package and cycle-safely
-  walks every current-root declaration signature, including nested source
-  types, whether or not the declaration belongs to a projection schema or
-  accessor. It observes referenced declared and unresolved error types in
-  superclasses, interfaces, fields, method returns, constructor and method
-  parameters, thrown types, and type-parameter bounds, recursively traversing
-  arrays, generic arguments, wildcards, enclosing types, and intersections;
-  resolved effective projection-accessor return types are observed as well.
-  Collection is complete before naming and is independent of source-file and
-  root-element order.
-- Package detection continues to use only Java 8-compatible standard
-  annotation-processing and compiler APIs, without arbitrary class-path
-  scanning or compiler internals. The declaration walk does not inspect method
-  bodies, import-only references, or arbitrary members of external types. A
-  parent prefix represented only by a genuinely unreferenced descendant
-  class-path package may remain unobservable portably; a `package-info.java` in
-  the parent package makes that package observable through its
-  `package-info.class`.
+- Before selecting generated names, package-collision detection now records
+  package ancestors from current type and package roots and cycle-safely
+  traverses current top-level and nested declaration signatures. Covered
+  declarations include fields and enum constants, methods and constructors,
+  parameters and type parameters, executable receiver types, and record
+  components when supported by the running compiler. Traversal includes
+  declared and unresolved error types, arrays, generic arguments, wildcards,
+  enclosing types, type variables, intersections, and resolved effective
+  projection-accessor return types. Collection is complete before naming and is
+  independent of source-file and root-element order.
+- Collision detection now also traverses annotation mirrors on those
+  declarations and on every recursively visited type, including each
+  annotation's declared type and explicit annotation values such as
+  class-literal, enum, nested-annotation, and array values, plus defaults
+  declared by current-source annotation members. Package-info and directly
+  present module annotations are included. Generated batch signatures continue
+  to omit type-use annotations.
+- Compiler invocations now have an explicit one-source-module boundary:
+  ordinary class-path compilation and one named or unnamed source module are
+  supported. An invocation containing a projection schema and roots from
+  multiple source modules fails before schema preparation, naming, or file
+  generation, without partial generated output. Maven reactor modules compiled
+  in separate invocations remain supported.
+- In a supported named module, the module root is not treated as a source type;
+  its directly enclosed package elements contribute prefixes without
+  recursively enumerating package members or treating class-path types as
+  current source.
+- Detection remains Java 8 binary-compatible and uses only standard
+  annotation-processing and language-model APIs. It does not inspect external
+  types referenced only by module `uses`/`provides` directives, imports without
+  a declaration-signature use, method or constructor bodies, initializer or
+  anonymous-class bodies, arbitrary external annotation members or defaults,
+  genuinely unreferenced descendant class-path packages, or packages created by
+  another processor in a later round after this processor has selected and
+  emitted its names. A `package-info.java` in a candidate parent package makes
+  that prefix observable in the schema's naming round.
 
 ### Changed
 

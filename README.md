@@ -208,54 +208,75 @@ cannot address, replace, or overwrite existing rows.
 The returned nested type is ordinarily named `Batch`. If that name would
 shadow the first identifier of a type reference required by generated source,
 the processor chooses a deterministic collision-safe name by appending
-underscores. This covers observable named-package roots and unnamed-package
-top-level types. Chained use through either `batch` factory, as above, does not
-require callers to spell the nested type name.
+underscores. This covers named-package roots observable through the bounded
+inputs described below and unnamed-package top-level types. Chained use through
+either `batch` factory, as above, does not require callers to spell the nested
+type name.
 
 The generated store contract ordinarily uses the projection's binary simple
-name followed by `Store`. If that candidate is an observable package or would
-shadow a source type root needed by the contract, the processor appends
-underscores until neither conflict remains. For example, a schema named
-`example.Schema` generates `example.SchemaStore_` when the observable package
-`example.SchemaStore` exists, and `example.SchemaStore__` when both observable
-packages `example.SchemaStore` and `example.SchemaStore_` exist. If the selected
-generated contract or the fixed concrete implementation name is already
-declared by user code, compilation fails with a generated-name collision
-diagnostic; the processor does not rename around, overwrite, or silently skip a
-user type.
+name followed by `Store`. If that candidate is a package observable through the
+inputs described below or would shadow a source type root needed by the
+contract, the processor appends underscores until neither conflict remains. For
+example, a schema named `example.Schema` generates `example.SchemaStore_` when
+the package `example.SchemaStore` is observable, and `example.SchemaStore__`
+when both `example.SchemaStore` and `example.SchemaStore_` are observable. If
+the selected generated contract or the fixed concrete implementation name is
+already declared by user code, compilation fails with a generated-name
+collision diagnostic; the processor does not rename around, overwrite, or
+silently skip a user type.
 
 Package detection uses only Java 8-compatible standard annotation-processing
-and compiler APIs; the processor does not scan arbitrary class-path directories
-or use compiler internals. Before selecting any generated top-level name, it
-collects all observable package information, independent of source-file and
-root-element order. For every current source root, it reserves every ancestor
-prefix of the root's declared package. For example, a root declared in
-`example.SchemaStore.sub` reserves `example`, `example.SchemaStore`, and
-`example.SchemaStore.sub`.
+and language-model APIs; the processor does not scan arbitrary class-path
+directories or use compiler internals. It supports ordinary class-path
+compilation and one named or unnamed source module per compiler invocation.
+Maven reactor modules remain supported when Maven invokes the compiler
+separately for each module. If an invocation that contains a projection schema
+has roots from more than one source module, compilation fails with a diagnostic
+requiring separate compilation. That check occurs before schema preparation,
+name selection, or generated-file creation, so it leaves no partial generated
+output.
 
-The processor also cycle-safely walks every current root's declaration
-signature, including nested current-source type declarations. The declaration
-need not belong to a projection schema or define a projection accessor. The
-processor reserves the package prefixes of referenced declared and unresolved
-error types found in superclasses and implemented or extended interfaces; field
-types; method return types; method and constructor parameter types; thrown
-types; and type-parameter bounds. Arrays, generic arguments, wildcard bounds,
-enclosing types, and intersection types are traversed recursively. Package
-components are kept distinct from nested type components through the standard
-language-model API. Resolved return types of effective projection accessors,
-including inherited accessors, are also observed before any schema name is
-selected.
+Before selecting any generated name in a supported compilation, the processor
+records every ancestor prefix of every package represented by a current type or
+package root. For example, a root declared in `example.SchemaStore.sub` records
+`example`, `example.SchemaStore`, and `example.SchemaStore.sub`. For a single
+named source module, the module root is not treated as a source type:
+annotations directly present on it are inspected, and directly enclosed
+`PackageElement` instances contribute package prefixes. Package members are not
+recursively enumerated, and class-path types are not reclassified as current
+source. Collection is independent of source-file and root-element order.
 
-The declaration-signature traversal does not inspect method bodies or imports
-by themselves, and it does not recursively inspect arbitrary members of
-referenced external types. A parent package prefix represented only by a
-genuinely unreferenced descendant class-path package may therefore remain
-unobservable portably. For example, the class-path type
-`example.SchemaStore.sub.Marker` is not guaranteed to reserve
-`example.SchemaStore` when it appears only in an import or method body, or is
-not referenced at all. To reserve that parent prefix reliably, provide a
-`package-info.java` in `example.SchemaStore` so its `package-info.class` is on
-the schema compilation's class path.
+The processor cycle-safely examines current top-level and nested declarations:
+types, fields and enum constants, methods and constructors, parameters and type
+parameters, and record components when the running compiler supports them. It
+also examines package-info declarations and annotations directly present on the
+module declaration. Declaration-signature traversal covers superclasses and
+interfaces, field types, method returns, constructor and method parameters,
+executable receiver types, thrown types, and type-parameter bounds. It
+recursively follows arrays, generic arguments, wildcards, enclosing types, type
+variables, intersections, and declared or unresolved error types. Resolved
+return types of effective projection accessors, including inherited accessors,
+are also included.
+
+Annotations on each such declaration and on every recursively visited
+`TypeMirror` are included. Traversal follows each annotation's declared type,
+explicitly supplied values, class-literal types, enum constants, nested
+annotations, and annotation-value arrays. It also follows default values
+declared by annotation members that are themselves current source. Arbitrary
+members and default values of external annotation types are not inspected.
+Type-use annotations can therefore affect collision-safe naming, but they
+remain intentionally omitted from generated batch signatures; the projection
+interface remains authoritative for them.
+
+The processor cannot observe external types referenced only by module
+`uses`/`provides` directives, imports without a declaration-signature use,
+method or constructor bodies, initializer or anonymous-class bodies, genuinely
+unreferenced descendant class-path packages, or packages first created by
+another annotation processor in a later round after names have been selected
+and emitted. If a candidate parent package would otherwise be invisible, place
+`package-info.java` in that candidate parent package and make it available in
+the schema's naming round, either as current source or through its
+`package-info.class`. This makes the parent prefix observable for naming.
 
 The provenance marker used to recognize processor-owned output exists only in
 output generated by the 1.2 processor. When upgrading from a pre-1.2 processor,
@@ -467,7 +488,9 @@ make mutable referenced objects immutable or thread-safe.
   `io.github.jutil.columnarprojection`. In each schema package, the generated
   `<Projection>Store` contract and concrete store constructor are also
   supported; all other generated implementation details are unsupported.
-- V1 makes no explicit JPMS or native-image compatibility guarantee.
+- JPMS annotation-processing support is limited to the
+  one-source-module-per-compiler-invocation boundary described above. V1 makes
+  no native-image compatibility guarantee.
 - Query planning, indexing, filtering, aggregation, schema migration, and
   durability are outside the V1 scope.
 
