@@ -7,9 +7,10 @@
  * annotation processing enabled, and create its common row-oriented store
  * through {@link io.github.jutil.columnarprojection.ProjectionStores}. For
  * typed batching, prefer the generated public schema-specific store contract;
- * its static factory delegates construction to {@code ProjectionStores}. The
- * generated contract and concrete store are emitted into the schema package.
- * The contract and the concrete store's public constructor are supported; all
- * other generated implementation details are unsupported.
+ * its static factory directly constructs its compile-time-known implementation.
+ * {@code ProjectionStores} instead performs reflective discovery for generic
+ * row-oriented code. The generated contract and concrete store are emitted into
+ * the schema package. The contract and the concrete store's public constructor
+ * are supported; all other generated implementation details are unsupported.
  */
 package io.github.jutil.columnarprojection;

@@ -49,12 +49,12 @@ import javax.tools.JavaFileObject;
  *
  * <p>The processor is normally discovered by the Java compiler through its
  * service-provider configuration. The generated schema-specific store
- * interface is the recommended API and delegates construction to
- * {@code ProjectionStores}. Its ordinary top-level name is the schema's binary
- * simple name followed by {@code Store}; package and required-source-name
- * conflicts may add trailing underscores. The generated concrete store
- * constructor remains supported for direct construction; all other generated
- * implementation details are unsupported.
+ * interface is the recommended schema-specific API and directly constructs its
+ * compile-time-known generated implementation. Its ordinary top-level name is
+ * the schema's binary simple name followed by {@code Store}; package and
+ * required-source-name conflicts may add trailing underscores. The generated
+ * concrete store constructor remains supported for direct construction; all
+ * other generated implementation details are unsupported.
  *
  * <p>One compiler invocation may contain source roots from at most one named
  * or unnamed module. Compile multiple source modules in separate compiler
@@ -1414,6 +1414,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "columnarprojection.ProjectionStore}. Building and batch "
                 + "mutation are not thread-safe. After sealing and safe "
                 + "publication, reads follow the inherited store contract.");
+        line(source, " * The static {@code create(int)} factory directly "
+                + "constructs the compile-time-known generated implementation.");
         line(source, " */");
         appendProvenanceAnnotation(
                 source, model, PROVENANCE_ROLE_CONTRACT);
@@ -1425,39 +1427,22 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "     * Creates an empty schema-specific store with the "
                 + "requested initial capacity.");
         line(source, "     *");
-        line(source, "     * <p>This method delegates construction to {@link "
-                + "io.github.jutil.columnarprojection.ProjectionStores}. "
-                + "The requested size is a capacity hint, not a row limit.");
+        line(source, "     * <p>This method directly constructs the generated "
+                + "implementation known at compile time. In a named module, "
+                + "this schema-specific path does not require the schema "
+                + "package to be exported or opened. The requested size is a "
+                + "capacity hint, not a row limit.");
         line(source, "     *");
         line(source, "     * @param expectedSize the expected number of rows, "
                 + "or zero when unknown");
         line(source, "     * @return a new empty store in the building state");
         line(source, "     * @throws java.lang.IllegalArgumentException if "
                 + "{@code expectedSize} is negative");
-        line(source, "     * @throws java.lang.IllegalStateException if the "
-                + "generated implementation is unavailable, malformed, "
-                + "incompatible, stale, or cannot be instantiated");
         line(source, "     */");
         line(source, "    static " + model.storeSimpleName
                 + " create(int expectedSize) {");
-        line(source, "        io.github.jutil.columnarprojection."
-                + "ProjectionStore<" + model.schemaName + "> store =");
-        line(source, "                io.github.jutil.columnarprojection."
-                + "ProjectionStores.create(");
-        line(source, "                        " + model.schemaName
-                + ".class, expectedSize);");
-        line(source, "        if (!" + model.storeSimpleName
-                + ".class.isInstance(store)) {");
-        line(source, "            throw new java.lang.IllegalStateException(");
-        line(source, "                    \"Generated store for "
-                + model.schemaName + " does not implement \"");
-        line(source, "                            + \""
-                + model.storeQualifiedName
-                + "; clean and recompile using the current \"");
-        line(source, "                            + \"annotation processor\");");
-        line(source, "        }");
-        line(source, "        return " + model.storeSimpleName
-                + ".class.cast(store);");
+        line(source, "        return new " + model.implementationSimpleName
+                + "(expectedSize);");
         line(source, "    }");
         line(source, "");
         appendBatchContract(source, model);

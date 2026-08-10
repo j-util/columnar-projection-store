@@ -14,15 +14,20 @@ import java.util.Objects;
  * Its ordinary top-level name is the schema's binary simple name followed by
  * {@code Store}; member-schema names therefore contain {@code $}, and package
  * or required-source-name conflicts may add trailing underscores. The
- * contract's static {@code create(int)} method delegates to this factory and is
- * the recommended entry point for typed batching.
+ * contract's static {@code create(int)} method directly constructs its
+ * compile-time-known implementation and is the recommended entry point for
+ * typed batching.
  *
- * <p>This factory returns the common {@link ProjectionStore} contract for
- * schema-agnostic and row-oriented code. Its declared return type cannot expose
- * generated schema-specific batch setters; local-variable type inference
- * ({@code var}) uses that declared return type as well. Direct construction
- * through a generated concrete store's public constructor remains supported.
- * All other generated implementation details are unsupported.
+ * <p>This factory instead performs runtime reflective discovery and returns the
+ * common {@link ProjectionStore} contract for schema-agnostic and row-oriented
+ * code. If the schema is in a named module, that module must export the schema
+ * package or open it to {@code columnar.projection.store}. This reflective
+ * access requirement does not apply to the generated schema-specific factory.
+ * This factory's declared return type cannot expose generated schema-specific
+ * batch setters; local-variable type inference ({@code var}) uses that declared
+ * return type as well. Direct construction through a generated concrete store's
+ * public constructor remains supported. All other generated implementation
+ * details are unsupported.
  */
 public final class ProjectionStores {
 
@@ -36,11 +41,14 @@ public final class ProjectionStores {
      * Creates an empty store for {@code projectionType}.
      *
      * <p>{@code expectedSize} is an initial-capacity hint, not a row limit. A
-     * store grows as needed while it is in its building state.
-     * The returned static type is the common row-oriented contract and does
-     * not declare schema-specific batch methods. Use {@code create(int)} on the
-     * generated schema-specific store contract when typed column setters are
-     * required; that method delegates construction back to this factory.
+     * store grows as needed while it is in its building state. This method
+     * discovers and invokes the generated implementation reflectively. In a
+     * named module, the schema package must either be exported or opened to
+     * {@code columnar.projection.store}. The returned static type is the common
+     * row-oriented contract and does not declare schema-specific batch methods.
+     * Use {@code create(int)} on the generated schema-specific store contract
+     * when typed column setters or encapsulated module access are required; that
+     * method directly constructs its compile-time-known implementation.
      *
      * @param projectionType the projection schema interface
      * @param expectedSize the expected number of rows, or zero when unknown
@@ -51,7 +59,7 @@ public final class ProjectionStores {
      *         or {@code projectionType} is not an interface
      * @throws IllegalStateException if no generated implementation is
      *         available, or if the generated implementation is malformed,
-     *         incompatible, or cannot be instantiated
+     *         incompatible, inaccessible, or cannot be instantiated
      */
     public static <T> ProjectionStore<T> create(
             Class<T> projectionType, int expectedSize) {
@@ -103,7 +111,13 @@ public final class ProjectionStores {
         } catch (InstantiationException exception) {
             throw malformedImplementation(generatedClassName, exception);
         } catch (IllegalAccessException exception) {
-            throw malformedImplementation(generatedClassName, exception);
+            throw new IllegalStateException(
+                    "Could not access generated projection store "
+                            + generatedClassName
+                            + ". In a named module, the schema package must "
+                            + "either be exported or opened to "
+                            + "columnar.projection.store.",
+                    exception);
         } catch (InvocationTargetException exception) {
             throw malformedImplementation(
                     generatedClassName, exception.getCause());

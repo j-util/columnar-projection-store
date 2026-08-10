@@ -2,15 +2,12 @@ package io.github.jutil.columnarprojection.processor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.File;
 import java.io.IOException;
-import java.lang.reflect.InvocationTargetException;
-import java.lang.reflect.Method;
 import java.net.URI;
 import java.net.URL;
 import java.net.URLClassLoader;
@@ -463,21 +460,17 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(contract.contains(
                 "static PriceProjectionStore create(int expectedSize)"),
                 contract);
-        assertTrue(contract.contains(
-                "ProjectionStores.create("), contract);
-        assertTrue(contract.contains(
-                "example.PriceProjection.class, expectedSize"), contract);
-        assertTrue(contract.contains(
-                "PriceProjectionStore.class.isInstance(store)"), contract);
-        assertTrue(contract.contains(
-                "PriceProjectionStore.class.cast(store)"), contract);
-        assertTrue(contract.contains(
-                "clean and recompile using the current"), contract);
         String factory = methodSource(
                 contract,
                 "static PriceProjectionStore create(int expectedSize)");
+        assertTrue(factory.contains(
+                "return new PriceProjection__ColumnarProjectionStore("
+                        + "expectedSize);"), factory);
+        assertFalse(factory.contains("ProjectionStores.create"), factory);
+        assertFalse(factory.contains(".class.isInstance"), factory);
+        assertFalse(factory.contains(".class.cast"), factory);
         assertFalse(factory.contains(
-                "PriceProjection__ColumnarProjectionStore"), factory);
+                "clean and recompile using the current"), factory);
         assertFalse(contract.contains("@java.lang.SuppressWarnings"), contract);
         assertFalse(contract.contains("(PriceProjectionStore)"), contract);
         assertTrue(implementation.contains(
@@ -695,78 +688,37 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
-    void generatedContractFactoryRejectsStaleImplementationAtRuntime()
+    void generatedContractFactoryConstructsCurrentImplementationAtRuntime()
             throws Exception {
-        Compilation current = compileWithProcessor(
-                "example.StaleProjection",
+        Compilation compilation = compileWithProcessor(
+                "example.FactoryProjection",
                 "package example;\n"
                         + "import io.github.jutil.columnarprojection."
                         + "ProjectionSchema;\n"
                         + "@ProjectionSchema\n"
-                        + "public interface StaleProjection {\n"
+                        + "public interface FactoryProjection {\n"
                         + "    int value();\n"
                         + "}\n");
-        assertSucceeded(current);
-
-        Compilation stale = compileWithoutProcessor(
-                Collections.singletonList(current.classOutput),
-                new StringSource(
-                        "example.StaleProjection"
-                                + "__ColumnarProjectionStore",
-                        "package example;\n"
-                                + "public final class StaleProjection"
-                                + "__ColumnarProjectionStore implements\n"
-                                + "        io.github.jutil.columnarprojection."
-                                + "ProjectionStore<StaleProjection> {\n"
-                                + "    public StaleProjection"
-                                + "__ColumnarProjectionStore(\n"
-                                + "            int expectedSize) { }\n"
-                                + "    public void add(StaleProjection value)"
-                                + " { }\n"
-                                + "    public int size() { return 0; }\n"
-                                + "    public void seal() { }\n"
-                                + "    public io.github.jutil."
-                                + "columnarprojection.ProjectionCursor<\n"
-                                + "            StaleProjection> cursor() {\n"
-                                + "        return null;\n"
-                                + "    }\n"
-                                + "    public StaleProjection viewAt(int index)"
-                                + " {\n"
-                                + "        return null;\n"
-                                + "    }\n"
-                                + "}\n"));
-        assertSucceeded(stale);
+        assertSucceeded(compilation);
 
         URL[] classPath = new URL[] {
-            stale.classOutput.toUri().toURL(),
-            current.classOutput.toUri().toURL()
+            compilation.classOutput.toUri().toURL()
         };
         try (URLClassLoader loader = new URLClassLoader(
                 classPath,
                 ProjectionSchemaProcessorCompilationTest.class
                         .getClassLoader())) {
             Class<?> contract = Class.forName(
-                    "example.StaleProjectionStore", true, loader);
+                    "example.FactoryProjectionStore", true, loader);
             Class<?> implementation = Class.forName(
-                    "example.StaleProjection__ColumnarProjectionStore",
+                    "example.FactoryProjection__ColumnarProjectionStore",
                     true,
                     loader);
-            assertTrue(io.github.jutil.columnarprojection.ProjectionStore.class
-                    .isAssignableFrom(implementation));
-            assertFalse(contract.isAssignableFrom(implementation));
+            Object store = contract.getMethod("create", Integer.TYPE)
+                    .invoke(null, 1);
 
-            Method create = contract.getMethod("create", Integer.TYPE);
-            InvocationTargetException thrown = assertThrows(
-                    InvocationTargetException.class,
-                    () -> create.invoke(null, 0));
-            IllegalStateException cause = assertInstanceOf(
-                    IllegalStateException.class, thrown.getCause());
-            assertEquals(
-                    "Generated store for example.StaleProjection does not "
-                            + "implement example.StaleProjectionStore; clean "
-                            + "and recompile using the current annotation "
-                            + "processor",
-                    cause.getMessage());
+            assertTrue(contract.isInstance(store));
+            assertTrue(implementation.isInstance(store));
         }
     }
 

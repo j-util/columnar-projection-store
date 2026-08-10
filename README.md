@@ -10,11 +10,11 @@ rows through stable indexed views or allocation-conscious cursors.
 Primitive-valued columns use primitive arrays. Reference-valued columns use
 arrays of the accessors' erased return types and keep references, including
 `null`; referenced objects are not copied or flattened. The runtime
-abstractions and factory live in `io.github.jutil.columnarprojection`. The
-processor generates a public schema-specific `<Projection>Store` contract and
-the supported concrete store constructor into the schema package; all other
-generated implementation details are unsupported. The library has no runtime
-dependencies and targets Java 8.
+abstractions and generic reflective factory live in
+`io.github.jutil.columnarprojection`. The processor generates a public
+schema-specific `<Projection>Store` contract and the supported concrete store
+constructor into the schema package; all other generated implementation details
+are unsupported. The library has no runtime dependencies and targets Java 8.
 
 ## Status and installation
 
@@ -148,14 +148,26 @@ public final class OrderExample {
 ```
 
 For schema-specific use, prefer the generated `<Projection>Store` interface.
-Its static `create(int)` method delegates construction to
-`ProjectionStores.create`, while exposing the generated typed batch contract.
-`ProjectionStores.create(Projection.class, ...)` remains the entry point for
-schema-agnostic and row-oriented code and returns the common
-`ProjectionStore<T>` contract, whose static type does not expose
+Its static `create(int)` method directly constructs the generated concrete
+implementation known at compile time while exposing the typed batch contract.
+Because the contract and implementation are generated into the schema package,
+this path works in a named module even when that package is neither exported nor
+opened.
+
+`ProjectionStores.create(Projection.class, ...)` instead performs runtime
+reflective discovery for schema-agnostic and row-oriented code. It returns the
+common `ProjectionStore<T>` contract, whose static type does not expose
 schema-specific batch setters. Using `var` does not change that: local-variable
 type inference uses the declared factory return type and cannot derive a
-generated interface from `Class<T>`.
+generated interface from `Class<T>`. If the schema is in a named module, this
+generic reflective factory requires the module to export the schema package or
+open it to the runtime module, for example:
+
+```java
+opens hidden to columnar.projection.store;
+```
+
+No export or open is required by the generated schema-specific factory.
 
 The generated concrete store's public constructor remains compatible for
 direct construction, but it is no longer necessary for typed batching. Runtime
@@ -377,14 +389,17 @@ including `null`, are copied as references without a deep copy. The source
 projection must not be mutated concurrently while it is being read.
 
 While building, passing a `null` projection to `add` throws
-`NullPointerException`. Creating a store with a `null` projection type also
-throws `NullPointerException`; a negative `expectedSize` or a non-interface
-projection type produces `IllegalArgumentException`. A missing generated
-implementation produces `IllegalStateException` whose message explains that
-the processor artifact must be configured on the annotation-processor path;
-the original class-loading failure is retained as the cause. Malformed or
-incompatible generated code and any failure to instantiate it also produce
-`IllegalStateException` with the underlying cause where one is available.
+`NullPointerException`. Both factory paths reject a negative `expectedSize` with
+`IllegalArgumentException`. For `ProjectionStores.create`, a `null` projection
+type throws `NullPointerException`, and a non-interface projection type produces
+`IllegalArgumentException`. A missing generated implementation produces
+`IllegalStateException` whose message explains that the processor artifact must
+be configured on the annotation-processor path; the original class-loading
+failure is retained as the cause. Malformed or incompatible generated code and
+any failure to instantiate it also produce `IllegalStateException` with the
+underlying cause where one is available. If reflective constructor access is
+denied, the message explains the named-module export/open requirement and the
+`IllegalAccessException` remains the cause.
 
 `viewAt(index)` returns a stable, read-only projection permanently bound to one
 row. It throws `IndexOutOfBoundsException` for an invalid index after the store
@@ -440,7 +455,7 @@ class loading.
 
 | Operation | Time |
 | --- | --- |
-| `ProjectionStores.create` | `O(c * (capacity + 1))` for the requested initial capacity |
+| Generated `<Projection>Store.create` or `ProjectionStores.create` | `O(c * (capacity + 1))` for the requested initial capacity |
 | `add` | Amortized `O(c)`; a growth step is `O(c * newCapacity)` |
 | Generated `batch` construction | `O(c)` |
 | A batch column assignment | `O(1)` |

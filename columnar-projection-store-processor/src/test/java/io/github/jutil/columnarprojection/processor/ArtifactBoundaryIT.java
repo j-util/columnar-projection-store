@@ -160,20 +160,92 @@ final class ArtifactBoundaryIT {
                 "consumer/NamedModuleProjection"
                         + "__ColumnarProjectionStore.class")));
 
-        Path javaExecutable = javaExecutable();
-        String modulePath = compilation.classes.toString()
-                + java.io.File.pathSeparator + coreJar;
-        Process process = new ProcessBuilder(
-                javaExecutable.toString(),
-                "--module-path", modulePath,
-                "--module",
-                "consumer.app/consumer.NamedModuleConsumer")
-                .redirectErrorStream(true)
-                .start();
-        String output = readUtf8(process.getInputStream());
-        int exitCode = process.waitFor();
-        assertEquals(0, exitCode, output);
-        assertTrue(output.contains("named-module-ok"), output);
+        assertNamedModuleRuns(
+                coreJar,
+                compilation,
+                "consumer.app/consumer.NamedModuleConsumer",
+                "named-module-ok");
+    }
+
+    @Test
+    void typedFactoryRunsInClosedNamedModuleAndGenericFactoryExplainsAccess()
+            throws Exception {
+        assumeFalse(isJava8Runtime(),
+                "Named-module compilation requires JDK 9 or newer");
+        Path coreJar = configuredJar("core.jar");
+        Path processorJar = configuredJar("processor.jar");
+        ConsumerCompilation compilation = compileNamedModuleConsumer(
+                coreJar,
+                processorJar,
+                "closed-named-module-consumer",
+                new StringSource(
+                        "module-info",
+                        "module closed.consumer {\n"
+                                + "    requires "
+                                + "columnar.projection.store;\n"
+                                + "}\n"),
+                new StringSource(
+                        "hidden.HiddenProjection",
+                        hiddenProjectionSource()),
+                new StringSource(
+                        "hidden.HiddenModuleConsumer",
+                        closedNamedModuleConsumerSource()));
+
+        assertTrue(compilation.succeeded,
+                diagnosticsText(compilation.diagnostics));
+        assertTrue(Files.isRegularFile(
+                compilation.classes.resolve("module-info.class")));
+        assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
+                "hidden/HiddenProjectionStore.java")));
+        assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
+                "hidden/HiddenProjection"
+                        + "__ColumnarProjectionStore.java")));
+
+        assertNamedModuleRuns(
+                coreJar,
+                compilation,
+                "closed.consumer/hidden.HiddenModuleConsumer",
+                "closed-named-module-ok");
+    }
+
+    @Test
+    void genericFactoryRunsWhenNamedModulePackageIsOpened()
+            throws Exception {
+        assumeFalse(isJava8Runtime(),
+                "Named-module compilation requires JDK 9 or newer");
+        Path coreJar = configuredJar("core.jar");
+        Path processorJar = configuredJar("processor.jar");
+        ConsumerCompilation compilation = compileNamedModuleConsumer(
+                coreJar,
+                processorJar,
+                "opened-named-module-consumer",
+                new StringSource(
+                        "module-info",
+                        "module opened.consumer {\n"
+                                + "    requires "
+                                + "columnar.projection.store;\n"
+                                + "    opens hidden to "
+                                + "columnar.projection.store;\n"
+                                + "}\n"),
+                new StringSource(
+                        "hidden.OpenedProjection",
+                        openedProjectionSource()),
+                new StringSource(
+                        "hidden.OpenedModuleConsumer",
+                        openedNamedModuleConsumerSource()));
+
+        assertTrue(compilation.succeeded,
+                diagnosticsText(compilation.diagnostics));
+        assertTrue(Files.isRegularFile(
+                compilation.classes.resolve("module-info.class")));
+        assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
+                "hidden/OpenedProjection__ColumnarProjectionStore.java")));
+
+        assertNamedModuleRuns(
+                coreJar,
+                compilation,
+                "opened.consumer/hidden.OpenedModuleConsumer",
+                "opened-named-module-ok");
     }
 
     @Test
@@ -269,8 +341,44 @@ final class ArtifactBoundaryIT {
 
     private ConsumerCompilation compileNamedModuleConsumer(
             Path coreJar, Path processorJar) throws IOException {
+        return compileNamedModuleConsumer(
+                coreJar,
+                processorJar,
+                "named-module-consumer",
+                new StringSource(
+                        "module-info",
+                        "module consumer.app {\n"
+                                + "    requires "
+                                + "columnar.projection.store;\n"
+                                + "    exports consumer;\n"
+                                + "}\n"),
+                new StringSource(
+                        "consumer.NamedModuleProjection",
+                        "package consumer;\n"
+                                + "import io.github.jutil."
+                                + "columnarprojection.ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface "
+                                + "NamedModuleProjection {\n"
+                                + "    long identifier();\n"
+                                + "    String symbol();\n"
+                                + "}\n"),
+                new StringSource(
+                        "consumer.NamedModuleProjectionStore.sub.Marker",
+                        "package consumer.NamedModuleProjectionStore.sub;\n"
+                                + "public final class Marker { }\n"),
+                new StringSource(
+                        "consumer.NamedModuleConsumer",
+                        namedModuleConsumerSource()));
+    }
+
+    private ConsumerCompilation compileNamedModuleConsumer(
+            Path coreJar,
+            Path processorJar,
+            String directoryName,
+            StringSource... sources) throws IOException {
         Path compilationDirectory = Files.createDirectories(
-                temporaryDirectory.resolve("named-module-consumer"));
+                temporaryDirectory.resolve(directoryName));
         Path classes = Files.createDirectories(
                 compilationDirectory.resolve("classes"));
         Path generatedSources = Files.createDirectories(
@@ -292,39 +400,13 @@ final class ArtifactBoundaryIT {
                     "-d", classes.toString(),
                     "-s", generatedSources.toString(),
                     "--release", "9"));
-            List<StringSource> sources = Arrays.asList(
-                    new StringSource(
-                            "module-info",
-                            "module consumer.app {\n"
-                                    + "    requires "
-                                    + "columnar.projection.store;\n"
-                                    + "    exports consumer;\n"
-                                    + "}\n"),
-                    new StringSource(
-                            "consumer.NamedModuleProjection",
-                            "package consumer;\n"
-                                    + "import io.github.jutil."
-                                    + "columnarprojection.ProjectionSchema;\n"
-                                    + "@ProjectionSchema\n"
-                                    + "public interface "
-                                    + "NamedModuleProjection {\n"
-                                    + "    long identifier();\n"
-                                    + "    String symbol();\n"
-                                    + "}\n"),
-                    new StringSource(
-                            "consumer.NamedModuleProjectionStore.sub.Marker",
-                            "package consumer.NamedModuleProjectionStore.sub;\n"
-                                    + "public final class Marker { }\n"),
-                    new StringSource(
-                            "consumer.NamedModuleConsumer",
-                            namedModuleConsumerSource()));
             JavaCompiler.CompilationTask task = compiler.getTask(
                     null,
                     fileManager,
                     diagnostics,
                     options,
                     null,
-                    sources);
+                    Arrays.asList(sources));
             succeeded = Boolean.TRUE.equals(task.call());
         } finally {
             fileManager.close();
@@ -364,7 +446,123 @@ final class ArtifactBoundaryIT {
                 + "store.viewAt(3).symbol())) {\n"
                 + "            throw new AssertionError(\"unexpected rows\");\n"
                 + "        }\n"
+                + "        io.github.jutil.columnarprojection."
+                + "ProjectionStore<NamedModuleProjection> common =\n"
+                + "                io.github.jutil.columnarprojection."
+                + "ProjectionStores.create(\n"
+                + "                        NamedModuleProjection.class, 1);\n"
+                + "        common.add(new NamedModuleProjection() {\n"
+                + "            public long identifier() { return 50L; }\n"
+                + "            public String symbol() { return \"E\"; }\n"
+                + "        });\n"
+                + "        common.seal();\n"
+                + "        if (common.size() != 1\n"
+                + "                || common.viewAt(0).identifier() != 50L\n"
+                + "                || !\"E\".equals("
+                + "common.viewAt(0).symbol())) {\n"
+                + "            throw new AssertionError("
+                + "\"unexpected common rows\");\n"
+                + "        }\n"
                 + "        System.out.println(\"named-module-ok\");\n"
+                + "    }\n"
+                + "}\n";
+    }
+
+    private static String hiddenProjectionSource() {
+        return "package hidden;\n"
+                + "import io.github.jutil.columnarprojection."
+                + "ProjectionSchema;\n"
+                + "@ProjectionSchema\n"
+                + "public interface HiddenProjection {\n"
+                + "    int quantity();\n"
+                + "    String symbol();\n"
+                + "}\n";
+    }
+
+    private static String closedNamedModuleConsumerSource() {
+        return "package hidden;\n"
+                + "public final class HiddenModuleConsumer {\n"
+                + "    private HiddenModuleConsumer() { }\n"
+                + "    public static void main(String[] arguments) {\n"
+                + "        HiddenProjectionStore store =\n"
+                + "                HiddenProjectionStore.create(1);\n"
+                + "        store.batch()\n"
+                + "                .quantity(new int[]{10, 20})\n"
+                + "                .symbol(new String[]{\"A\", \"B\"})\n"
+                + "                .append();\n"
+                + "        store.batch(1, 3)\n"
+                + "                .quantity(new int[]{0, 30, 40})\n"
+                + "                .symbol(new String[]{\"ignored\", "
+                + "\"C\", \"D\", \"unused\"})\n"
+                + "                .append();\n"
+                + "        if (store.size() != 4) {\n"
+                + "            throw new AssertionError(\"typed size\");\n"
+                + "        }\n"
+                + "        store.seal();\n"
+                + "        if (store.viewAt(0).quantity() != 10\n"
+                + "                || !\"A\".equals("
+                + "store.viewAt(0).symbol())\n"
+                + "                || store.viewAt(3).quantity() != 40\n"
+                + "                || !\"D\".equals("
+                + "store.viewAt(3).symbol())) {\n"
+                + "            throw new AssertionError(\"typed rows\");\n"
+                + "        }\n"
+                + "        try {\n"
+                + "            io.github.jutil.columnarprojection."
+                + "ProjectionStores.create(HiddenProjection.class, 1);\n"
+                + "            throw new AssertionError("
+                + "\"generic factory unexpectedly succeeded\");\n"
+                + "        } catch (java.lang.IllegalStateException expected) {\n"
+                + "            if (!(expected.getCause() instanceof\n"
+                + "                    java.lang.IllegalAccessException)) {\n"
+                + "                throw new AssertionError("
+                + "\"unexpected generic factory cause\", expected);\n"
+                + "            }\n"
+                + "            String message = expected.getMessage();\n"
+                + "            if (message == null\n"
+                + "                    || !message.contains(\"named module\")\n"
+                + "                    || !message.contains(\"schema package\")\n"
+                + "                    || !message.contains(\"exported\")\n"
+                + "                    || !message.contains(\"opened\")\n"
+                + "                    || !message.contains("
+                + "\"columnar.projection.store\")) {\n"
+                + "                throw new AssertionError("
+                + "\"unexpected generic factory message: \" + message);\n"
+                + "            }\n"
+                + "        }\n"
+                + "        System.out.println(\"closed-named-module-ok\");\n"
+                + "    }\n"
+                + "}\n";
+    }
+
+    private static String openedProjectionSource() {
+        return "package hidden;\n"
+                + "import io.github.jutil.columnarprojection."
+                + "ProjectionSchema;\n"
+                + "@ProjectionSchema\n"
+                + "public interface OpenedProjection {\n"
+                + "    long identifier();\n"
+                + "}\n";
+    }
+
+    private static String openedNamedModuleConsumerSource() {
+        return "package hidden;\n"
+                + "public final class OpenedModuleConsumer {\n"
+                + "    private OpenedModuleConsumer() { }\n"
+                + "    public static void main(String[] arguments) {\n"
+                + "        io.github.jutil.columnarprojection."
+                + "ProjectionStore<OpenedProjection> store =\n"
+                + "                io.github.jutil.columnarprojection."
+                + "ProjectionStores.create(OpenedProjection.class, 1);\n"
+                + "        store.add(new OpenedProjection() {\n"
+                + "            public long identifier() { return 10L; }\n"
+                + "        });\n"
+                + "        store.seal();\n"
+                + "        if (store.size() != 1\n"
+                + "                || store.viewAt(0).identifier() != 10L) {\n"
+                + "            throw new AssertionError(\"generic rows\");\n"
+                + "        }\n"
+                + "        System.out.println(\"opened-named-module-ok\");\n"
                 + "    }\n"
                 + "}\n";
     }
@@ -534,6 +732,26 @@ final class ArtifactBoundaryIT {
             offset += fragment.length();
         }
         return count;
+    }
+
+    private static void assertNamedModuleRuns(
+            Path coreJar,
+            ConsumerCompilation compilation,
+            String moduleAndMainClass,
+            String expectedOutput) throws Exception {
+        Path javaExecutable = javaExecutable();
+        String modulePath = compilation.classes.toString()
+                + java.io.File.pathSeparator + coreJar;
+        Process process = new ProcessBuilder(
+                javaExecutable.toString(),
+                "--module-path", modulePath,
+                "--module", moduleAndMainClass)
+                .redirectErrorStream(true)
+                .start();
+        String output = readUtf8(process.getInputStream());
+        int exitCode = process.waitFor();
+        assertEquals(0, exitCode, output);
+        assertTrue(output.contains(expectedOutput), output);
     }
 
     private static boolean isJava8Runtime() {
