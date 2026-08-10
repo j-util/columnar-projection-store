@@ -47,11 +47,25 @@ This file records user-visible changes to Columnar Projection Store.
 - Generated store-contract, implementation, and private batch-implementation
   names are collision-checked; conflicts produce compiler diagnostics instead
   of silently skipping or overwriting types.
-- Package detection uses only standard annotation-processing and compiler APIs,
-  not arbitrary class-path scanning or compiler internals. A parent prefix
-  represented only by an otherwise unreferenced descendant class-path package
-  may not be observable portably; a `package-info.java` in the parent package
-  makes that package observable through its `package-info.class`.
+- Before selecting generated top-level names, package detection now reserves
+  every ancestor prefix of each current-source root package and cycle-safely
+  walks every current-root declaration signature, including nested source
+  types, whether or not the declaration belongs to a projection schema or
+  accessor. It observes referenced declared and unresolved error types in
+  superclasses, interfaces, fields, method returns, constructor and method
+  parameters, thrown types, and type-parameter bounds, recursively traversing
+  arrays, generic arguments, wildcards, enclosing types, and intersections;
+  resolved effective projection-accessor return types are observed as well.
+  Collection is complete before naming and is independent of source-file and
+  root-element order.
+- Package detection continues to use only Java 8-compatible standard
+  annotation-processing and compiler APIs, without arbitrary class-path
+  scanning or compiler internals. The declaration walk does not inspect method
+  bodies, import-only references, or arbitrary members of external types. A
+  parent prefix represented only by a genuinely unreferenced descendant
+  class-path package may remain unobservable portably; a `package-info.java` in
+  the parent package makes that package observable through its
+  `package-info.class`.
 
 ### Changed
 

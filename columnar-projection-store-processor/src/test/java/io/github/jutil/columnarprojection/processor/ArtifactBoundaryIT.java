@@ -150,12 +150,12 @@ final class ArtifactBoundaryIT {
         assertTrue(Files.isRegularFile(
                 compilation.classes.resolve("module-info.class")));
         assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
-                "consumer/NamedModuleProjectionStore.java")));
+                "consumer/NamedModuleProjectionStore_.java")));
         assertTrue(Files.isRegularFile(compilation.generatedSources.resolve(
                 "consumer/NamedModuleProjection"
                         + "__ColumnarProjectionStore.java")));
         assertTrue(Files.isRegularFile(compilation.classes.resolve(
-                "consumer/NamedModuleProjectionStore.class")));
+                "consumer/NamedModuleProjectionStore_.class")));
         assertTrue(Files.isRegularFile(compilation.classes.resolve(
                 "consumer/NamedModuleProjection"
                         + "__ColumnarProjectionStore.class")));
@@ -312,6 +312,10 @@ final class ArtifactBoundaryIT {
                                     + "    String symbol();\n"
                                     + "}\n"),
                     new StringSource(
+                            "consumer.NamedModuleProjectionStore.sub.Marker",
+                            "package consumer.NamedModuleProjectionStore.sub;\n"
+                                    + "public final class Marker { }\n"),
+                    new StringSource(
                             "consumer.NamedModuleConsumer",
                             namedModuleConsumerSource()));
             JavaCompiler.CompilationTask task = compiler.getTask(
@@ -337,8 +341,8 @@ final class ArtifactBoundaryIT {
                 + "public final class NamedModuleConsumer {\n"
                 + "    private NamedModuleConsumer() { }\n"
                 + "    public static void main(String[] arguments) {\n"
-                + "        NamedModuleProjectionStore store =\n"
-                + "                NamedModuleProjectionStore.create(1);\n"
+                + "        NamedModuleProjectionStore_ store =\n"
+                + "                NamedModuleProjectionStore_.create(1);\n"
                 + "        store.batch()\n"
                 + "                .identifier(new long[]{10L, 20L})\n"
                 + "                .symbol(new String[]{\"A\", \"B\"})\n"

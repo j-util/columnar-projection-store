@@ -224,14 +224,36 @@ declared by user code, compilation fails with a generated-name collision
 diagnostic; the processor does not rename around, overwrite, or silently skip a
 user type.
 
-Package detection uses only standard annotation-processing and compiler APIs;
-the processor does not scan arbitrary class-path directories or use compiler
-internals. It detects packages declared in the current compilation and
-class-path packages that the compiler makes observable. A parent package prefix
-represented only by an otherwise unreferenced descendant class-path package may
-not be observable portably. For example, the class-path type
-`example.SchemaStore.sub.Marker` alone may not expose the parent package prefix
-`example.SchemaStore`. To reserve that parent prefix reliably, provide a
+Package detection uses only Java 8-compatible standard annotation-processing
+and compiler APIs; the processor does not scan arbitrary class-path directories
+or use compiler internals. Before selecting any generated top-level name, it
+collects all observable package information, independent of source-file and
+root-element order. For every current source root, it reserves every ancestor
+prefix of the root's declared package. For example, a root declared in
+`example.SchemaStore.sub` reserves `example`, `example.SchemaStore`, and
+`example.SchemaStore.sub`.
+
+The processor also cycle-safely walks every current root's declaration
+signature, including nested current-source type declarations. The declaration
+need not belong to a projection schema or define a projection accessor. The
+processor reserves the package prefixes of referenced declared and unresolved
+error types found in superclasses and implemented or extended interfaces; field
+types; method return types; method and constructor parameter types; thrown
+types; and type-parameter bounds. Arrays, generic arguments, wildcard bounds,
+enclosing types, and intersection types are traversed recursively. Package
+components are kept distinct from nested type components through the standard
+language-model API. Resolved return types of effective projection accessors,
+including inherited accessors, are also observed before any schema name is
+selected.
+
+The declaration-signature traversal does not inspect method bodies or imports
+by themselves, and it does not recursively inspect arbitrary members of
+referenced external types. A parent package prefix represented only by a
+genuinely unreferenced descendant class-path package may therefore remain
+unobservable portably. For example, the class-path type
+`example.SchemaStore.sub.Marker` is not guaranteed to reserve
+`example.SchemaStore` when it appears only in an import or method body, or is
+not referenced at all. To reserve that parent prefix reliably, provide a
 `package-info.java` in `example.SchemaStore` so its `package-info.class` is on
 the schema compilation's class path.
 
