@@ -18,9 +18,14 @@ are unsupported. The library has no runtime dependencies and targets Java 8.
 
 ## Status and installation
 
-Unreleased version `1.2.0` adds a generated, type-safe batch API for appending
-column arrays while preserving the row-oriented API and storage semantics
-introduced in `1.0.0`.
+Version `1.2.0` is the latest release and provides the generated, type-safe
+batch API for appending column arrays while preserving the row-oriented API and
+storage semantics introduced in `1.0.0`. Development version
+`1.3.0-SNAPSHOT` adds an optional caller-owned executor for copying the columns
+of one batch concurrently; the existing sequential API remains unchanged.
+The installation example below therefore keeps the published `1.2.0`
+coordinate; the executor overload documented later is development API until a
+`1.3.0` release is available.
 Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
 and
@@ -150,9 +155,16 @@ public final class OrderExample {
 For schema-specific use, prefer the generated `<Projection>Store` interface.
 Its static `create(int)` method directly constructs the generated concrete
 implementation known at compile time while exposing the typed batch contract.
+The additive `create(int, Executor)` overload constructs the same kind of store
+but uses a caller-owned executor for per-column copying during batch append.
 Because the contract and implementation are generated into the schema package,
 this path works in a named module even when that package is neither exported nor
 opened.
+
+The overload does not replace or change `create(int)`, the generated concrete
+store's public constructor, `ProjectionStores.create`, or the generated batch
+interface. Existing callers therefore keep the sequential behavior unless they
+explicitly select the new factory overload.
 
 `ProjectionStores.create(Projection.class, ...)` instead performs runtime
 reflective discovery for schema-agnostic and row-oriented code. It returns the
@@ -198,6 +210,45 @@ prices.batch()
         .symbol(new String[] {"A", "B"})
         .append();
 ```
+
+To copy the columns of each batch concurrently, pass an executor to the
+generated factory. The store borrows the executor: neither `seal()` nor any
+other store operation shuts it down. The caller may reuse one executor across
+stores and remains responsible for its eventual shutdown. Sealing releases the
+store's reference to the executor.
+
+```java
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
+ExecutorService copyExecutor = Executors.newFixedThreadPool(2);
+try {
+    PriceProjectionStore prices =
+            PriceProjectionStore.create(expectedSize, copyExecutor);
+
+    prices.batch()
+            .price(new double[] {15.1, 25.2})
+            .symbol(new String[] {"A", "B"})
+            .append();
+    prices.seal();
+} finally {
+    copyExecutor.shutdown();
+}
+```
+
+`append()` remains synchronous: it returns or throws only after every accepted
+column-copy task has completed. Supplying an executor does not make the store
+itself safe for concurrent calls and does not make separate batches append
+concurrently. It parallelizes the independent column copies within one positive
+batch while preserving append order. On the success path, a positive batch
+submits exactly one copy task per generated column; a zero-row batch submits
+none.
+
+Passing a null executor to `create` throws `NullPointerException`. The supplied
+executor must continue accepting and executing work for the lifetime of every
+append that uses it. A direct executor is valid but executes the copies
+sequentially on the calling thread. Executor choice, sizing, shutdown, and reuse
+are caller policy; the store neither owns nor manages those resources.
 
 Common-range mode applies one half-open source range to every column:
 
@@ -354,6 +405,29 @@ stored values. Reference-valued elements still use the store's shallow-copy
 semantics: the references are copied, while the referenced objects, including
 array-valued projection results, are not cloned.
 
+For an executor-backed store, the same ownership rule extends through the full
+`append()` call: do not mutate a selected source range concurrently with
+`append()`. Because the call waits for all of its copy work, the caller may
+reuse or mutate its source arrays again after `append()` completes, whether it
+returns normally or throws.
+
+If the executor rejects a submission or a column copy fails, `append()` waits
+uninterruptibly for every already accepted copy task. It clears
+reference-valued destination slots in the attempted range, leaves the logical
+size unchanged, retains the source arrays, and rethrows the submission failure
+or one primary copy failure; additional failures are attached as suppressed
+exceptions.
+Primitive values already copied into the unused tail remain inaccessible. The
+batch remains unconsumed and may be retried after the cause is corrected.
+Capacity growth completed before submission is not rolled back.
+
+If the caller thread is interrupted while waiting, `append()` still waits for
+the accepted tasks to reach quiescence and restores the thread's interrupted
+status before returning or throwing. A rejected submission is rethrown as the
+same unchecked exception or error after quiescence. An unchecked exception or
+error from a copy task is likewise unwrapped and rethrown; an unexpected
+checked failure is wrapped in `IllegalStateException`.
+
 The destination starts at the store's size when `append()` executes, not when
 the batch is created. Consequently, multiple unfinished whole-array and ranged
 batches may be appended in any order, and their successful append calls
@@ -389,7 +463,8 @@ including `null`, are copied as references without a deep copy. The source
 projection must not be mutated concurrently while it is being read.
 
 While building, passing a `null` projection to `add` throws
-`NullPointerException`. Both factory paths reject a negative `expectedSize` with
+`NullPointerException`. Every generated factory overload and
+`ProjectionStores.create` rejects a negative `expectedSize` with
 `IllegalArgumentException`. For `ProjectionStores.create`, a `null` projection
 type throws `NullPointerException`, and a non-interface projection type produces
 `IllegalArgumentException`. A missing generated implementation produces
@@ -451,7 +526,8 @@ Let `c` be the number of stored accessors, `r` the current row count,
 `capacity` the current per-column backing-array length, and `newCapacity` its
 length after a growth step. The bounds below describe store overhead; they
 exclude work performed inside user-written accessor bodies and one-time JVM
-class loading.
+class loading. Executor-backed bounds describe generated work and exclude
+executor queueing delay or unrelated work performed by the executor.
 
 | Operation | Time |
 | --- | --- |
@@ -459,7 +535,8 @@ class loading.
 | `add` | Amortized `O(c)`; a growth step is `O(c * newCapacity)` |
 | Generated `batch` construction | `O(c)` |
 | A batch column assignment | `O(1)` |
-| Batch `append` | Without growth, `O(c * (n + 1))`; with growth, `O(c * (newCapacity + n + 1))`, where `n` is the selected row count |
+| Sequential batch `append` | Without growth, `O(c * (n + 1))`; with growth, `O(c * (newCapacity + n + 1))`, where `n` is the selected row count |
+| Executor-backed batch `append` | The same total work and worst-case bounds as sequential append, plus `O(c)` task-submission and coordination work; capacity growth remains part of the calling thread's work |
 | `size`, `seal`, `cursor`, `viewAt` | `O(1)` |
 | Cursor `moveNext`, `current`, `rewind` | `O(1)` |
 | A generated projection accessor | `O(1)` |
@@ -480,6 +557,14 @@ appended. In common-range mode, caller-owned source arrays may be much longer
 than `n`, so the amount of source storage kept reachable is not bounded by the
 selected row count.
 
+An executor-backed positive append additionally uses `O(c)` transient task and
+coordination objects. Its column copies are independent, but the API does not
+promise a latency improvement: scheduling overhead and shared memory bandwidth
+can make parallel copying slower, especially for narrow schemas or small
+batches. Cleaning reference-valued destination slots after a rejected
+submission or failed copy can perform another `O(c * n)` writes in the worst
+case.
+
 ## Thread safety
 
 Building a store is not thread-safe. Do not call `add`, `batch`, batch column
@@ -487,6 +572,14 @@ methods, batch `append`, or `seal` concurrently, and do not read through views
 or cursors while building. After `seal()` and safe publication to reader
 threads, the store and stable indexed views may be read concurrently. Each
 thread must use its own cursor; cursors are not thread-safe.
+
+An executor-backed append is the only internal exception to that external
+single-threaded building contract: generated copy tasks write disjoint column
+arrays, and the calling thread waits for them before publishing the new logical
+size. Do not call `append()` from a worker of the same bounded executor when all
+of that executor's workers could be occupied waiting in such calls. The queued
+column copies would then have no worker available and the calls could deadlock
+through thread starvation.
 
 Safe publication applies only to the stored references. The library does not
 make mutable referenced objects immutable or thread-safe.

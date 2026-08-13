@@ -2,7 +2,24 @@
 
 This file records user-visible changes to Columnar Projection Store.
 
-## 1.2.0 - Unreleased
+## 1.3.0 - Unreleased
+
+### Added
+
+- Generated schema-specific store interfaces now provide an additive
+  `create(int, Executor)` factory. A positive batch appended to one of these
+  stores dispatches one copy operation per column to the caller-owned executor
+  and waits for every accepted operation before `append()` completes. The
+  existing `create(int)`, generated constructors, and sequential batch behavior
+  remain compatible.
+- Executor-backed append is synchronous and failure-atomic for logical rows.
+  Rejected submissions and copy failures wait uninterruptibly for accepted
+  tasks, clear attempted reference destinations, preserve interruption, and
+  leave the batch retryable. The store never shuts down its borrowed executor,
+  and callers must avoid executor starvation by ensuring queued copy tasks can
+  run while `append()` waits.
+
+## 1.2.0 - 2026-08-10
 
 ### Added
 

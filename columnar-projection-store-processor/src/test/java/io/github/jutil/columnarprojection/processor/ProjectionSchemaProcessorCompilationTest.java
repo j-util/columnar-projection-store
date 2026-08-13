@@ -443,6 +443,18 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "PriceProjection.class, 1);\n"
                         + "        new PriceProjection"
                         + "__ColumnarProjectionStore(1);\n"
+                        + "        java.util.concurrent.Executor executor = "
+                        + "new java.util.concurrent.Executor() {\n"
+                        + "            public void execute(Runnable task) {\n"
+                        + "                task.run();\n"
+                        + "            }\n"
+                        + "        };\n"
+                        + "        PriceProjectionStore parallel = "
+                        + "PriceProjectionStore.create(1, executor);\n"
+                        + "        parallel.batch()\n"
+                        + "                .price(new double[]{55.5})\n"
+                        + "                .symbol(new String[]{\"E\"})\n"
+                        + "                .append();\n"
                         + "    }\n"
                         + "}\n");
 
@@ -460,6 +472,10 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(contract.contains(
                 "static PriceProjectionStore create(int expectedSize)"),
                 contract);
+        assertTrue(contract.contains(
+                "static PriceProjectionStore create(int expectedSize, "
+                        + "java.util.concurrent.Executor executor)"),
+                contract);
         String factory = methodSource(
                 contract,
                 "static PriceProjectionStore create(int expectedSize)");
@@ -473,6 +489,8 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "clean and recompile using the current"), factory);
         assertFalse(contract.contains("@java.lang.SuppressWarnings"), contract);
         assertFalse(contract.contains("(PriceProjectionStore)"), contract);
+        assertFalse(contract.contains(
+                "append(java.util.concurrent.Executor"), contract);
         assertTrue(implementation.contains(
                 "implements example.PriceProjectionStore"), implementation);
         assertTrue(implementation.contains(
@@ -982,6 +1000,34 @@ final class ProjectionSchemaProcessorCompilationTest {
                 generated);
         assertTrue(generated.contains(
                 "BatchImplementation.Value[] source"), generated);
+    }
+
+    @Test
+    void privateColumnCopyOperationNameIsCollisionSafe()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "ColumnCopyOperation.Value",
+                        "package ColumnCopyOperation;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.ColumnCopyOperationCollision",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "interface ColumnCopyOperationCollision {\n"
+                                + "    ColumnCopyOperation.Value value();\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String generated = generatedSource(
+                compilation, "example.ColumnCopyOperationCollision");
+        assertTrue(generated.contains(
+                "private static final class ColumnCopyOperation_ "),
+                generated);
+        assertTrue(generated.contains(
+                "ColumnCopyOperation.Value[] source"), generated);
     }
 
     @Test

@@ -643,6 +643,11 @@ final class ArtifactBoundaryIT {
                     && requiredCall < overflowCheck, append);
             assertTrue(copyCall > positiveBatchGuard
                     && copyCall < sizePublication, append);
+            assertEquals(1, countOccurrences(
+                    append,
+                    "copyColumns" + helperIndex
+                            + "(destinationOffset);"),
+                    append);
             assertTrue(clearCall > sizePublication
                     && clearCall < consumedPublication, append);
 
@@ -671,12 +676,12 @@ final class ArtifactBoundaryIT {
 
         assertEquals(helperCount,
                 countOccurrences(append, "requireColumns"), append);
-        assertEquals(helperCount,
-                countOccurrences(append, "copyColumns"), append);
+        assertEquals(1, countOccurrences(
+                append, "copyColumnsConcurrently(executor, "), append);
         assertEquals(helperCount,
                 countOccurrences(append, "clearSources"), append);
         assertEquals(columnCount, copyHelperArrayCopies, batch);
-        assertEquals(columnCount, countOccurrences(
+        assertEquals(columnCount + 1, countOccurrences(
                 generated, "java.lang.System.arraycopy("), generated);
     }
 

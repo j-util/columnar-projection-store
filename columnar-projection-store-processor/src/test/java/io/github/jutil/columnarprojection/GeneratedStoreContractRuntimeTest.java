@@ -7,8 +7,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.util.concurrent.Executor;
 import org.junit.jupiter.api.Test;
 
 class GeneratedStoreContractRuntimeTest {
@@ -62,6 +64,36 @@ class GeneratedStoreContractRuntimeTest {
         Method commonFactory = ProjectionStores.class.getMethod(
                 "create", Class.class, Integer.TYPE);
         assertSame(ProjectionStore.class, commonFactory.getReturnType());
+        Method concurrentFactory = PriceProjectionStore.class.getMethod(
+                "create", Integer.TYPE, Executor.class);
+        assertTrue(Modifier.isStatic(concurrentFactory.getModifiers()));
+        assertSame(PriceProjectionStore.class,
+                concurrentFactory.getReturnType());
+        assertSame(PriceProjectionStore.class,
+                PriceProjectionStore.class.getMethod(
+                        "create", Integer.TYPE).getReturnType());
+
+        Constructor<PriceProjection__ColumnarProjectionStore>
+                compatibleConstructor =
+                        PriceProjection__ColumnarProjectionStore.class
+                                .getConstructor(Integer.TYPE);
+        assertTrue(Modifier.isPublic(
+                compatibleConstructor.getModifiers()));
+        Constructor<PriceProjection__ColumnarProjectionStore>
+                concurrentConstructor =
+                        PriceProjection__ColumnarProjectionStore.class
+                                .getDeclaredConstructor(
+                                        Integer.TYPE, Executor.class);
+        assertFalse(Modifier.isPublic(
+                concurrentConstructor.getModifiers()));
+        assertFalse(Modifier.isProtected(
+                concurrentConstructor.getModifiers()));
+        assertFalse(Modifier.isPrivate(
+                concurrentConstructor.getModifiers()));
+
+        assertThrows(NoSuchMethodException.class,
+                () -> PriceProjectionStore.Batch.class.getMethod(
+                        "append", Executor.class));
         assertThrows(IllegalArgumentException.class,
                 () -> PriceProjectionStore.create(-1));
     }
