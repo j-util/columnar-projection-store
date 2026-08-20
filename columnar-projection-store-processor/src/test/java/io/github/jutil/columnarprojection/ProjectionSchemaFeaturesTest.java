@@ -124,27 +124,30 @@ class ProjectionSchemaFeaturesTest {
     void generatedColumnFillingSupportsInheritanceCovarianceAndNesting() {
         DefaultMethodProjectionStore defaults =
                 DefaultMethodProjectionStore.create(0);
-        defaults.quantity(new int[] {8});
+        defaults.columnAppender().quantity(new int[] {8});
         defaults.seal();
         assertEquals(16, defaults.viewAt(0).doubledQuantity());
 
         InheritedStringProjectionStore inherited =
                 InheritedStringProjectionStore.create(0);
-        inherited.inheritedValue(new String[] {"inherited-column"});
+        inherited.columnAppender().inheritedValue(
+                new String[] {"inherited-column"});
         inherited.seal();
         assertEquals("inherited-column",
                 inherited.viewAt(0).inheritedValue());
 
         CovariantIntegerProjectionStore covariant =
                 CovariantIntegerProjectionStore.create(0);
-        covariant.amount(new Integer[] {null, Integer.valueOf(43)});
+        covariant.columnAppender().amount(
+                new Integer[] {null, Integer.valueOf(43)});
         covariant.seal();
         assertNull(covariant.viewAt(0).amount());
         assertEquals(Integer.valueOf(43), covariant.viewAt(1).amount());
 
         NestedSchemaContainer$NestedProjectionStore nested =
                 NestedSchemaContainer$NestedProjectionStore.create(0);
-        nested.identifier(new long[] {0L, 654L}, 1, 2);
+        nested.columnAppender().identifier(
+                new long[] {0L, 654L}, 1, 2);
         nested.seal();
         assertEquals(654L, nested.viewAt(0).identifier());
     }

@@ -161,8 +161,8 @@ public final class OrderExample {
 
 For schema-specific use, prefer the generated `<Projection>Store` interface.
 Its static `create(int)` method directly constructs the generated concrete
-implementation known at compile time while exposing typed batch and per-column
-filling methods.
+implementation known at compile time while exposing typed batch operations and
+a nested typed column-appender contract.
 Because the contract and implementation are generated into the schema package,
 this path works in a named module even when that package is neither exported nor
 opened.
@@ -170,16 +170,16 @@ opened.
 Per-column filling does not replace or change `create(int)`, the generated
 concrete store's public constructor, `ProjectionStores.create`, or the generated
 batch interface. The common `ProjectionStore<T>` interface intentionally does
-not expose per-column methods.
+not expose the column appender.
 
 `ProjectionStores.create(Projection.class, ...)` instead performs runtime
 reflective discovery for schema-agnostic and row-oriented code. It returns the
 common `ProjectionStore<T>` contract, whose static type does not expose
-schema-specific batch setters. Using `var` does not change that: local-variable
-type inference uses the declared factory return type and cannot derive a
-generated interface from `Class<T>`. If the schema is in a named module, this
-generic reflective factory requires the module to export the schema package or
-open it to the runtime module, for example:
+schema-specific batch setters or `columnAppender()`. Using `var` does not change
+that: local-variable type inference uses the declared factory return type and
+cannot derive a generated interface from `Class<T>`. If the schema is in a
+named module, this generic reflective factory requires the module to export the
+schema package or open it to the runtime module, for example:
 
 ```java
 opens hidden to columnar.projection.store;
@@ -191,9 +191,10 @@ The generated concrete store's public constructor remains compatible for
 direct construction, but it is no longer necessary for typed batching. Runtime
 abstractions remain in `io.github.jutil.columnarprojection`. Other generated
 implementation details, such as backing fields, private batch implementations,
-and view classes, are not supported API.
+the private column-appender implementation, and view classes, are not supported
+API.
 
-## Schema-specific column and batch append
+## Schema-specific column appender and batch append
 
 For a top-level projection named `PriceProjection`, the processor generates the
 public `PriceProjectionStore` contract and the compatible concrete
@@ -220,9 +221,10 @@ prices.batch()
 ### Per-column filling
 
 For pipelines that already produce columns independently, the generated store
-also declares two synchronous methods with each projection accessor's exact
-name. The whole-array overload appends every element; the range overload appends
-the half-open source range:
+also declares a nested typed appender. It has two synchronous methods with each
+projection accessor's exact name. The whole-array overload appends every
+element; the range overload appends the half-open source range. Accessor-named
+filling methods are not declared directly on the store:
 
 ```java
 @ProjectionSchema
@@ -233,26 +235,37 @@ interface Trade {
 }
 
 TradeStore trades = TradeStore.create(expectedSize);
+TradeStore.ColumnAppender columns = trades.columnAppender();
 
-trades.timestamp(timestampChunk);
-trades.timestamp(moreTimestamps, fromIndex, toIndex);
+columns.timestamp(timestampChunk);
+columns.timestamp(moreTimestamps, fromIndex, toIndex);
 
-trades.price(priceChunk);
-trades.price(morePrices, differentFromIndex, differentToIndex);
+columns.price(priceChunk);
+columns.price(morePrices, differentFromIndex, differentToIndex);
 
-trades.symbol(symbolChunk);
-trades.symbol(moreSymbols);
+columns.symbol(symbolChunk);
+columns.symbol(moreSymbols);
 
 // Join any caller-managed filling tasks before sealing.
 trades.seal();
 ```
 
-Each call copies before returning and retains no source-array reference, so the
-caller may reuse or mutate the source after successful return. Chunk boundaries
-may differ between columns. Each column owns its append count and grows only its
-own backing array. Calls for distinct columns may execute concurrently; calls
-to the same column require external single-writer serialization. No column call
-waits for another column.
+The official generated store returns the same store-owned appender object from
+every `columnAppender()` call. Each appender method copies synchronously and
+retains no source-array reference, so the caller may reuse or mutate the source
+after successful return. The selected source elements must remain stable until
+the call returns. Chunk boundaries may differ between columns. Each column owns
+its append count and grows only its own backing array. Calls for distinct
+columns may execute concurrently; calls to the same column require external
+single-writer serialization. No column call waits for another column.
+
+`columnAppender()` is a default method on the generated store contract. This
+lets an external implementation or decorator written against the generated
+1.2.0 contract continue to link and recompile without adding a method. Its
+inherited default throws `UnsupportedOperationException`; the official
+processor-generated implementation overrides it with the appender described
+above. The generated concrete store itself does not implement the appender
+interface or expose accessor-named filling methods.
 
 During per-column filling, `size()` remains zero. After the caller has joined
 all filling tasks, `seal()` compares every generated column count. A successful
@@ -290,6 +303,12 @@ underscores. This covers named-package roots observable through the bounded
 inputs described below and unnamed-package top-level types. Chained use through
 either `batch` factory, as above, does not require callers to spell the nested
 type name.
+
+The column-appender contract is ordinarily named `ColumnAppender`. Its nested
+contract and private implementation names use the same deterministic
+collision-safe underscore rule as the batch types, so neither name shadows a
+source type or package required by generated signatures. Chained use through
+`columnAppender()` avoids depending on the selected nested type name.
 
 The generated store contract ordinarily uses the projection's binary simple
 name followed by `Store`. If that candidate is a package observable through the
@@ -372,24 +391,26 @@ evolution selects a different generated top-level name and stale output cannot
 be removed safely, compilation reports the specific stale name and requests a
 clean rebuild.
 
-For a parameterized accessor, its batch setter and per-column methods preserve
-the resolved declared return type whenever every part of that type can legally
-be named from the generated store. For example, `List<String> labels()` produces
-source parameters accepting `List<String>[]`; an `ArrayList<String>[]` is
-compatible while an `ArrayList<Integer>[]` is rejected at compilation. Backing
-columns still use erased, reifiable arrays such as `List[]`. If a generic
-argument is inaccessible to the generated top-level class, the source parameter
-falls back to the erased array type. This fallback preserves schemas accepted by
-earlier versions, but necessarily loses generic argument checking for that
-column. Generated source-array signatures preserve source-nameable Java type
-structure and generic arguments, but intentionally omit type-use annotations.
-The projection interface remains authoritative for type-use annotations.
+For a parameterized accessor, its batch setter and column-appender methods
+preserve the resolved declared return type whenever every part of that type can
+legally be named from the generated store. For example,
+`List<String> labels()` produces source parameters accepting `List<String>[]`;
+an `ArrayList<String>[]` is compatible while an `ArrayList<Integer>[]` is
+rejected at compilation. Backing columns still use erased, reifiable arrays
+such as `List[]`. If a generic argument is inaccessible to the generated
+top-level class, the source parameter falls back to the erased array type. This
+fallback preserves schemas accepted by earlier versions, but necessarily loses
+generic argument checking for that column. Generated source-array signatures
+preserve source-nameable Java type structure and generic arguments, but
+intentionally omit type-use annotations. The projection interface remains
+authoritative for type-use annotations.
 
 In whole-array mode, the first non-null array successfully assigned to a
 column establishes the row count. Every later column array must have exactly
 that length. An unequal array throws `IllegalArgumentException` before that
 column is assigned, so it remains available for correction. Every generated
-column method must be called exactly once, even for an empty whole-array batch.
+batch column setter must be called exactly once, even for an empty whole-array
+batch.
 Consequently, `batch().append()` fails with `IllegalStateException`; represent
 an empty whole-array batch by supplying an empty array for every column.
 
@@ -420,13 +441,14 @@ stored values. Reference-valued elements still use the store's shallow-copy
 semantics: the references are copied, while the referenced objects, including
 array-valued projection results, are not cloned.
 
-Per-column methods have different ownership: they validate and copy during the
-method call and never retain the source array. On successful return, replacing
-or mutating source-array elements cannot change stored column values. As with
-batch append, reference elements are shallow-copied; mutating an object already
+Column-appender methods have different ownership: they validate and copy during
+the method call and never retain the source array. Selected source elements must
+remain stable until the call returns. On successful return, replacing or
+mutating source-array elements cannot change stored column values. As with batch
+append, reference elements are shallow-copied; mutating an object already
 referenced by both source and store remains visible through that object.
 
-A null per-column source throws `NullPointerException` while the store is
+A null column-appender source throws `NullPointerException` while the store is
 building. Range overloads require
 `0 <= sourceFromIndex <= sourceToIndex <= source.length` and validate the range
 before selecting a mutation mode or changing capacity. Null elements in
@@ -461,7 +483,7 @@ necessary.
   calls are harmless. An unequal-count failure leaves the store building and
   can be retried after corrective filling.
 - After sealing, `size`, `cursor`, and `viewAt` are available. `add` throws
-  `IllegalStateException`, as do all generated per-column methods; a store
+  `IllegalStateException`, as do all generated column-appender methods; a store
   cannot be unsealed.
 
 The first positive `add` or batch append selects row mode. The first positive
@@ -559,7 +581,8 @@ one-time JVM class loading.
 | Generated `batch` construction | `O(c)` |
 | A batch column assignment | `O(1)` |
 | Batch `append` | Without growth, `O(c * (n + 1))`; with growth, `O(c * (newCapacity + n + 1))` |
-| One per-column whole-array or range call | Without growth, `O(n)`; with growth, `O(newCapacity + n)` for that column only |
+| `columnAppender()` | `O(1)` |
+| One column-appender whole-array or range call | Without growth, `O(n)`; with growth, `O(newCapacity + n)` for that column only |
 | `seal` | `O(c)` count validation |
 | `size`, `cursor`, `viewAt` | `O(1)` |
 | Cursor `moveNext`, `current`, `rewind` | `O(1)` |
@@ -584,16 +607,16 @@ selected row count.
 In column mode, capacities may differ. Retained backing storage is the sum of
 the individual column capacities. A growth step temporarily retains only that
 column's old array and new array and never grows, copies, or replaces another
-column. A per-column call uses constant additional bookkeeping beyond any new
+column. A column-appender call uses constant additional bookkeeping beyond any new
 backing array allocated for growth, and it retains no caller source after
 successful return.
 
 ## Thread safety
 
-Calls to generated per-column methods for distinct columns may execute
-concurrently. Each column is single-writer: calls targeting the same column must
-be externally serialized. A per-column call never waits for another column and
-does not lock or grow another column on its normal copy path.
+Calls to generated column-appender methods for distinct columns may execute
+concurrently. Each column is single-writer: calls targeting the same column
+must be externally serialized. A column-appender call never waits for another
+column and does not lock or grow another column on its normal copy path.
 
 Do not invoke `add`, either `batch` factory, batch column methods, batch
 `append`, `size`, `seal`, `cursor`, or `viewAt` concurrently with per-column

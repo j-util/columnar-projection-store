@@ -6,13 +6,18 @@ This file records user-visible changes to Columnar Projection Store.
 
 ### Added
 
-- Generated schema-specific store interfaces now expose whole-array and
-  half-open-range methods named exactly after every projection accessor. Each
-  call synchronously appends only its own column, copies before returning, and
-  retains no source-array reference.
-- Distinct generated column methods may run concurrently. Each column has an
-  independent append count and grows only its own backing array; calls to the
-  same column remain externally single-writer.
+- Generated schema-specific store interfaces now expose a nested typed
+  column-appender contract through `columnAppender()`. Its whole-array and
+  half-open-range methods use each projection accessor's exact name and source
+  array type. Each call synchronously appends only its own column, copies before
+  returning, and retains no source-array reference.
+- The official generated store returns one store-owned appender and keeps
+  accessor-named filling methods off the store itself. Distinct appender column
+  methods may run concurrently. Each column has an independent append count and
+  grows only its own backing array; calls to the same column remain externally
+  single-writer.
+- Column-appender contract and implementation names use the processor's
+  deterministic collision-safe nested-type naming rule.
 - Column filling keeps the logical size at zero until sealing. `seal()` checks
   all generated column counts in O(number of columns), publishes the common
   count on success, and reports useful column/count information on mismatch.
@@ -32,6 +37,12 @@ This file records user-visible changes to Columnar Projection Store.
   carried into 1.3.0. The published 1.2.0 API remains compatible: generated
   `create(int)`, the public generated constructor, `add`, both batch factories,
   batch append, `seal`, `cursor`, and `viewAt` are unchanged.
+- `columnAppender()` is a default generated-contract method so external 1.2.0
+  implementations and decorators continue to link and recompile. Its inherited
+  default reports unsupported operation; the official generated implementation
+  overrides it. The unreleased direct accessor-named store methods were removed
+  to avoid changing overload resolution for valid accessor names such as
+  `add()` and `equals()`.
 
 ## 1.2.0 - 2026-08-10
 
@@ -139,7 +150,7 @@ This file records user-visible changes to Columnar Projection Store.
   stale output and requests a clean rebuild when that output cannot be removed
   safely.
 - Generated store interfaces now document construction, both typed batch modes,
-  column setters, source-range validation, empty behavior, ownership,
+  batch column setters, source-range validation, empty behavior, ownership,
   lifecycle, ordering, and complexity semantics.
 - Generated concrete stores implement their schema-specific store interfaces;
   their public constructors and common `ProjectionStore` behavior remain

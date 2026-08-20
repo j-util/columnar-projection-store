@@ -3,6 +3,7 @@ package io.github.jutil.columnarprojection.processor;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
@@ -40,6 +41,8 @@ final class GeneratedApiBinaryCompatibilityIT {
             + ".BinaryCompatibilityProjection__ColumnarProjectionStore";
     private static final String CONSUMER_NAME =
             PACKAGE_NAME + ".PrecompiledV12Consumer";
+    private static final String PRECOMPILED_IMPLEMENTATION_NAME =
+            PACKAGE_NAME + ".PrecompiledV12Implementation";
     private static final String PROCESSOR_CLASS =
             "io.github.jutil.columnarprojection.processor."
                     + "ProjectionSchemaProcessor";
@@ -70,6 +73,20 @@ final class GeneratedApiBinaryCompatibilityIT {
         assertTrue(legacyApi.succeeded,
                 diagnosticsText(legacyApi.diagnostics));
 
+        Compilation sourceCompatibleDecorator = compilePlain(
+                "source-compatible-decorator",
+                Arrays.asList(currentApi.classes, coreJar),
+                sourceCompatibleDecoratorSource());
+        assertTrue(sourceCompatibleDecorator.succeeded,
+                diagnosticsText(sourceCompatibleDecorator.diagnostics));
+
+        Compilation precompiledImplementation = compilePlain(
+                "precompiled-implementation",
+                Collections.singletonList(legacyApi.classes),
+                precompiledImplementationSource());
+        assertTrue(precompiledImplementation.succeeded,
+                diagnosticsText(precompiledImplementation.diagnostics));
+
         Compilation precompiledConsumer = compilePlain(
                 "precompiled-consumer",
                 Collections.singletonList(legacyApi.classes),
@@ -89,6 +106,7 @@ final class GeneratedApiBinaryCompatibilityIT {
 
         URL[] runtimeClassPath = new URL[] {
             precompiledConsumer.classes.toUri().toURL(),
+            precompiledImplementation.classes.toUri().toURL(),
             currentApi.classes.toUri().toURL(),
             coreJar.toUri().toURL()
         };
@@ -104,6 +122,25 @@ final class GeneratedApiBinaryCompatibilityIT {
             assertLoadedFrom(currentApi.classes, contract);
             assertLoadedFrom(currentApi.classes, implementation);
             assertNotNull(contract.getMethod("create", int.class));
+            Method columnAppender = contract.getMethod("columnAppender");
+            assertTrue(columnAppender.isDefault());
+
+            Class<?> oldImplementation = Class.forName(
+                    PRECOMPILED_IMPLEMENTATION_NAME, true, loader);
+            Object oldStore = oldImplementation
+                    .getConstructor(int.class)
+                    .newInstance(Integer.valueOf(0));
+            assertEquals(0, oldImplementation.getMethod("size")
+                    .invoke(oldStore));
+            InvocationTargetException unsupported = assertThrows(
+                    InvocationTargetException.class,
+                    () -> columnAppender.invoke(oldStore));
+            assertTrue(unsupported.getCause()
+                    instanceof UnsupportedOperationException,
+                    String.valueOf(unsupported.getCause()));
+            assertEquals(
+                    "Per-column filling is not supported by this implementation",
+                    unsupported.getCause().getMessage());
             assertCommonRuntimeSurfaceUnchanged(loader);
         }
     }
@@ -369,6 +406,60 @@ final class GeneratedApiBinaryCompatibilityIT {
                         + "        }\n"
                         + "        return \"binary-compatible-ok\";\n"
                         + "    }\n"
+                        + "}\n");
+    }
+
+    private static StringSource sourceCompatibleDecoratorSource() {
+        return new StringSource(
+                PACKAGE_NAME + ".SourceCompatibleV12Decorator",
+                "package " + PACKAGE_NAME + ";\n"
+                        + "public final class SourceCompatibleV12Decorator\n"
+                        + "        implements "
+                        + "BinaryCompatibilityProjectionStore {\n"
+                        + "    private final "
+                        + "BinaryCompatibilityProjectionStore delegate;\n"
+                        + "    public SourceCompatibleV12Decorator(\n"
+                        + "            BinaryCompatibilityProjectionStore "
+                        + "delegate) {\n"
+                        + "        this.delegate = delegate;\n"
+                        + "    }\n"
+                        + "    public Batch batch() { return delegate.batch(); }\n"
+                        + "    public Batch batch(int from, int to) {\n"
+                        + "        return delegate.batch(from, to);\n"
+                        + "    }\n"
+                        + "    public void add(BinaryCompatibilityProjection "
+                        + "projection) { delegate.add(projection); }\n"
+                        + "    public int size() { return delegate.size(); }\n"
+                        + "    public void seal() { delegate.seal(); }\n"
+                        + "    public io.github.jutil.columnarprojection."
+                        + "ProjectionCursor<BinaryCompatibilityProjection> "
+                        + "cursor() { return delegate.cursor(); }\n"
+                        + "    public BinaryCompatibilityProjection "
+                        + "viewAt(int index) { return delegate.viewAt(index); }\n"
+                        + "}\n");
+    }
+
+    private static StringSource precompiledImplementationSource() {
+        return new StringSource(
+                PRECOMPILED_IMPLEMENTATION_NAME,
+                "package " + PACKAGE_NAME + ";\n"
+                        + "public final class PrecompiledV12Implementation\n"
+                        + "        implements "
+                        + "BinaryCompatibilityProjectionStore {\n"
+                        + "    public PrecompiledV12Implementation("
+                        + "int expectedSize) { }\n"
+                        + "    public Batch batch() { return null; }\n"
+                        + "    public Batch batch(int from, int to) { "
+                        + "return null; }\n"
+                        + "    public void add(BinaryCompatibilityProjection "
+                        + "projection) { }\n"
+                        + "    public int size() { return 0; }\n"
+                        + "    public void seal() { }\n"
+                        + "    public io.github.jutil.columnarprojection."
+                        + "ProjectionCursor<BinaryCompatibilityProjection> "
+                        + "cursor() { return null; }\n"
+                        + "    public BinaryCompatibilityProjection "
+                        + "viewAt(int index) { return null; }\n"
                         + "}\n");
     }
 

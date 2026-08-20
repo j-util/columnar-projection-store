@@ -5,8 +5,8 @@ package io.github.jutil.columnarprojection;
  *
  * <p>A newly created store is in the building state and is logically empty.
  * Row and batch building operations are not thread-safe. A generated
- * schema-specific store may additionally expose synchronous per-column filling:
- * distinct columns may be filled concurrently, but each column is
+ * schema-specific store may additionally expose a synchronous typed column
+ * appender: distinct columns may be filled concurrently, but each column is
  * single-writer, and no common operation declared here may overlap that work.
  * A successful {@link #seal()} permanently ends the building state. After
  * sealing and safe publication, the store may be read concurrently, but each

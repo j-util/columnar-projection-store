@@ -22,31 +22,44 @@ import org.junit.jupiter.api.Test;
 class PerColumnFillRuntimeTest {
 
     @Test
-    void generatedContractHasWholeArrayAndRangeMethodsOnlyOnTypedStore()
+    void generatedContractHasWholeArrayAndRangeMethodsOnlyOnAppender()
             throws Exception {
         Class<?> contract = BatchProjectionStore.class;
+        Class<?> appender = BatchProjectionStore.ColumnAppender.class;
 
-        assertEquals(Void.TYPE, contract.getMethod(
+        Method columnAppender = contract.getMethod("columnAppender");
+        assertTrue(columnAppender.isDefault());
+        assertSame(appender, columnAppender.getReturnType());
+        assertEquals(Void.TYPE, appender.getMethod(
                 "quantity", int[].class).getReturnType());
-        assertEquals(Void.TYPE, contract.getMethod(
+        assertEquals(Void.TYPE, appender.getMethod(
                 "quantity", int[].class, Integer.TYPE, Integer.TYPE)
                 .getReturnType());
-        assertEquals(Void.TYPE, contract.getMethod(
+        assertEquals(Void.TYPE, appender.getMethod(
                 "symbol", String[].class).getReturnType());
-        assertEquals(Void.TYPE, contract.getMethod(
+        assertEquals(Void.TYPE, appender.getMethod(
                 "symbol", String[].class, Integer.TYPE, Integer.TYPE)
                 .getReturnType());
-        assertEquals(Void.TYPE, contract.getMethod(
+        assertEquals(Void.TYPE, appender.getMethod(
                 "payload", byte[][].class).getReturnType());
-        assertEquals(Void.TYPE, contract.getMethod(
+        assertEquals(Void.TYPE, appender.getMethod(
                 "payload", byte[][].class, Integer.TYPE, Integer.TYPE)
                 .getReturnType());
         assertThrows(NoSuchMethodException.class,
-                () -> contract.getMethod("quantity", int[].class,
+                () -> appender.getMethod("quantity", int[].class,
                         Integer.TYPE));
         assertThrows(NoSuchMethodException.class,
-                () -> ProjectionStore.class.getMethod(
+                () -> contract.getMethod("quantity", int[].class));
+        assertThrows(NoSuchMethodException.class,
+                () -> BatchProjection__ColumnarProjectionStore.class.getMethod(
                         "quantity", int[].class));
+        assertThrows(NoSuchMethodException.class,
+                () -> ProjectionStore.class.getMethod("columnAppender"));
+        assertFalse(appender.isAssignableFrom(
+                BatchProjection__ColumnarProjectionStore.class));
+
+        BatchProjectionStore store = BatchProjectionStore.create(0);
+        assertSame(store.columnAppender(), store.columnAppender());
 
         Constructor<?>[] constructors =
                 BatchProjection__ColumnarProjectionStore.class
@@ -56,31 +69,33 @@ class PerColumnFillRuntimeTest {
         assertSame(Integer.TYPE, constructors[0].getParameterTypes()[0]);
         assertGeneratedStoreContainsNoCoordinationApi(
                 BatchProjection__ColumnarProjectionStore.class);
+        assertGeneratedStoreContainsNoCoordinationApi(appender);
     }
 
     @Test
     void repeatedChunksWithDifferentBoundariesAlignAtSeal() {
         BatchProjectionStore store = BatchProjectionStore.create(1);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
         byte[] payload0 = new byte[] {0};
         byte[] payload1 = new byte[] {1};
         byte[] payload2 = new byte[] {2};
         byte[] payload3 = new byte[] {3};
 
         int[] firstQuantities = new int[] {10, 11, 99};
-        store.quantity(firstQuantities, 0, 2);
+        columns.quantity(firstQuantities, 0, 2);
         firstQuantities[0] = -1;
-        store.quantity(new int[] {0, 12, 13}, 1, 3);
+        columns.quantity(new int[] {0, 12, 13}, 1, 3);
 
         String[] firstSymbols = new String[] {"A"};
-        store.symbol(firstSymbols);
+        columns.symbol(firstSymbols);
         firstSymbols[0] = "changed";
-        store.symbol(new String[] {"ignored", "B", "C", "D"}, 1, 4);
+        columns.symbol(new String[] {"ignored", "B", "C", "D"}, 1, 4);
 
         byte[][] firstPayloads =
                 new byte[][] {payload0, payload1, payload2};
-        store.payload(firstPayloads);
+        columns.payload(firstPayloads);
         firstPayloads[0] = new byte[] {99};
-        store.payload(new byte[][] {payload3});
+        columns.payload(new byte[][] {payload3});
 
         assertEquals(0, store.size());
         store.seal();
@@ -97,13 +112,14 @@ class PerColumnFillRuntimeTest {
             throws Exception {
         final int rowCount = 200;
         BatchProjectionStore store = BatchProjectionStore.create(0);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService workers = Executors.newFixedThreadPool(3);
         try {
             Future<?> quantities = workers.submit(() -> {
                 await(start);
                 for (int index = 0; index < rowCount; index++) {
-                    store.quantity(new int[] {index});
+                    columns.quantity(new int[] {index});
                 }
             });
             Future<?> symbols = workers.submit(() -> {
@@ -114,7 +130,7 @@ class PerColumnFillRuntimeTest {
                     for (int offset = 0; offset < length; offset++) {
                         chunk[offset] = "S" + (from + offset);
                     }
-                    store.symbol(chunk);
+                    columns.symbol(chunk);
                 }
             });
             Future<?> payloads = workers.submit(() -> {
@@ -125,7 +141,7 @@ class PerColumnFillRuntimeTest {
                     for (int offset = 0; offset < length; offset++) {
                         chunk[offset] = new byte[] {(byte) (from + offset)};
                     }
-                    store.payload(chunk);
+                    columns.payload(chunk);
                 }
             });
 
@@ -152,10 +168,11 @@ class PerColumnFillRuntimeTest {
     void oneColumnReturnsWithoutWaitingForColumnsThatHaveNotStarted()
             throws Exception {
         BatchProjectionStore store = BatchProjectionStore.create(0);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
         ExecutorService worker = Executors.newSingleThreadExecutor();
         try {
             Future<?> completed = worker.submit(
-                    () -> store.quantity(new int[] {1, 2, 3}));
+                    () -> columns.quantity(new int[] {1, 2, 3}));
             completed.get(2, TimeUnit.SECONDS);
         } finally {
             worker.shutdownNow();
@@ -166,8 +183,8 @@ class PerColumnFillRuntimeTest {
                 IllegalStateException.class, store::seal);
         assertTrue(mismatch.getMessage().contains("count"),
                 mismatch.getMessage());
-        store.symbol(new String[] {"A", "B", "C"});
-        store.payload(new byte[][] {
+        columns.symbol(new String[] {"A", "B", "C"});
+        columns.payload(new byte[][] {
             new byte[] {1}, new byte[] {2}, new byte[] {3}
         });
         store.seal();
@@ -177,12 +194,13 @@ class PerColumnFillRuntimeTest {
     @Test
     void unequalSealPreservesDataAndAllowsCorrectiveFilling() {
         BatchProjectionStore store = BatchProjectionStore.create(0);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
         byte[] first = new byte[] {1};
         byte[] second = new byte[] {2};
         byte[] third = new byte[] {3};
-        store.quantity(new int[] {1, 2, 3});
-        store.symbol(new String[] {"A", "B"});
-        store.payload(new byte[][] {first});
+        columns.quantity(new int[] {1, 2, 3});
+        columns.symbol(new String[] {"A", "B"});
+        columns.payload(new byte[][] {first});
 
         IllegalStateException mismatch = assertThrows(
                 IllegalStateException.class, store::seal);
@@ -197,8 +215,8 @@ class PerColumnFillRuntimeTest {
         assertEquals(0, store.size());
         assertThrows(IllegalStateException.class, store::cursor);
 
-        store.symbol(new String[] {"C"});
-        store.payload(new byte[][] {second, third});
+        columns.symbol(new String[] {"C"});
+        columns.payload(new byte[][] {second, third});
         store.seal();
 
         assertEquals(3, store.size());
@@ -213,8 +231,10 @@ class PerColumnFillRuntimeTest {
         assertEquals(0, untouched.size());
 
         IntProjectionStore singleColumn = IntProjectionStore.create(0);
-        singleColumn.value(new int[] {1, 2});
-        singleColumn.value(new int[] {0, 3, 4}, 1, 3);
+        IntProjectionStore.ColumnAppender singleColumnAppender =
+                singleColumn.columnAppender();
+        singleColumnAppender.value(new int[] {1, 2});
+        singleColumnAppender.value(new int[] {0, 3, 4}, 1, 3);
         assertEquals(0, singleColumn.size());
         singleColumn.seal();
         assertEquals(4, singleColumn.size());
@@ -225,9 +245,10 @@ class PerColumnFillRuntimeTest {
     @Test
     void nullReferenceElementsAndAllNullColumnsPreserveTheirLengths() {
         BatchProjectionStore store = BatchProjectionStore.create(0);
-        store.quantity(new int[] {7, 8, 9});
-        store.symbol(new String[] {null, null, null});
-        store.payload(new byte[][] {null, null, null});
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
+        columns.quantity(new int[] {7, 8, 9});
+        columns.symbol(new String[] {null, null, null});
+        columns.payload(new byte[][] {null, null, null});
         store.seal();
 
         assertEquals(3, store.size());
@@ -241,20 +262,21 @@ class PerColumnFillRuntimeTest {
     void validationEmptyOverflowAndPostSealCallsAreAtomic()
             throws Exception {
         BatchProjectionStore store = BatchProjectionStore.create(0);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
         assertThrows(NullPointerException.class,
-                () -> store.quantity(null));
+                () -> columns.quantity(null));
         assertThrows(NullPointerException.class,
-                () -> store.quantity(null, 0, 0));
+                () -> columns.quantity(null, 0, 0));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> store.quantity(new int[] {1}, -1, 0));
+                () -> columns.quantity(new int[] {1}, -1, 0));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> store.quantity(new int[] {1}, 1, 0));
+                () -> columns.quantity(new int[] {1}, 1, 0));
         assertThrows(IndexOutOfBoundsException.class,
-                () -> store.quantity(new int[] {1}, 0, 2));
+                () -> columns.quantity(new int[] {1}, 0, 2));
 
-        store.quantity(new int[0]);
-        store.symbol(new String[0], 0, 0);
-        store.payload(new byte[0][]);
+        columns.quantity(new int[0]);
+        columns.symbol(new String[0], 0, 0);
+        columns.payload(new byte[0][]);
         assertEquals(0, store.size());
 
         Field quantityCount =
@@ -263,39 +285,40 @@ class PerColumnFillRuntimeTest {
         quantityCount.setAccessible(true);
         quantityCount.setInt(store, Integer.MAX_VALUE);
         assertThrows(IllegalStateException.class,
-                () -> store.quantity(new int[] {1}));
+                () -> columns.quantity(new int[] {1}));
         quantityCount.setInt(store, 0);
 
-        store.quantity(new int[] {1});
-        store.symbol(new String[] {"A"});
-        store.payload(new byte[][] {new byte[] {1}});
+        columns.quantity(new int[] {1});
+        columns.symbol(new String[] {"A"});
+        columns.payload(new byte[][] {new byte[] {1}});
         store.seal();
 
         assertThrows(IllegalStateException.class,
-                () -> store.quantity(new int[] {2}));
+                () -> columns.quantity(new int[] {2}));
         assertThrows(IllegalStateException.class,
-                () -> store.quantity(null));
+                () -> columns.quantity(null));
         assertThrows(IllegalStateException.class,
-                () -> store.quantity(new int[0]));
+                () -> columns.quantity(new int[0]));
         assertThrows(IllegalStateException.class,
-                () -> store.quantity(new int[] {2}, -1, 0));
+                () -> columns.quantity(new int[] {2}, -1, 0));
         assertThrows(IllegalStateException.class,
-                () -> store.symbol(new String[] {"B"}, 0, 1));
+                () -> columns.symbol(new String[] {"B"}, 0, 1));
         assertThrows(IllegalStateException.class,
-                () -> store.payload(new byte[0][], 0, 0));
+                () -> columns.payload(new byte[0][], 0, 0));
     }
 
     @Test
     void perColumnGrowthNeverGrowsAnotherColumn() throws Exception {
         BatchProjectionStore store = BatchProjectionStore.create(0);
-        store.quantity(new int[32]);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
+        columns.quantity(new int[32]);
 
         assertTrue(arrayCapacity(store, int[].class) >= 32);
         assertEquals(0, arrayCapacity(store, String[].class));
         assertEquals(0, arrayCapacity(store, byte[][].class));
 
         int quantityCapacity = arrayCapacity(store, int[].class);
-        store.symbol(new String[] {"A"});
+        columns.symbol(new String[] {"A"});
         assertEquals(quantityCapacity, arrayCapacity(store, int[].class));
         assertEquals(0, arrayCapacity(store, byte[][].class));
     }
@@ -303,13 +326,17 @@ class PerColumnFillRuntimeTest {
     @Test
     void positiveRowAndColumnModesCannotMixButNoOpsDoNotSelectMode() {
         BatchProjectionStore rowMode = BatchProjectionStore.create(0);
-        rowMode.quantity(new int[0]);
-        rowMode.symbol(new String[0], 0, 0);
-        rowMode.payload(new byte[0][]);
+        BatchProjectionStore.ColumnAppender rowColumns =
+                rowMode.columnAppender();
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> rowColumns.quantity(new int[] {1}, 0, 2));
+        rowColumns.quantity(new int[0]);
+        rowColumns.symbol(new String[0], 0, 0);
+        rowColumns.payload(new byte[0][]);
         rowMode.add(row(1, "A", new byte[] {1}));
-        rowMode.quantity(new int[0]);
+        rowColumns.quantity(new int[0]);
         assertThrows(IllegalStateException.class,
-                () -> rowMode.quantity(new int[] {2}));
+                () -> rowColumns.quantity(new int[] {2}));
         rowMode.batch()
                 .quantity(new int[] {2})
                 .symbol(new String[] {"B"})
@@ -319,10 +346,12 @@ class PerColumnFillRuntimeTest {
         assertEquals(2, rowMode.size());
 
         BatchProjectionStore columnMode = BatchProjectionStore.create(0);
+        BatchProjectionStore.ColumnAppender columnColumns =
+                columnMode.columnAppender();
         assertThrows(IndexOutOfBoundsException.class,
-                () -> columnMode.quantity(new int[] {1}, 0, 2));
+                () -> columnColumns.quantity(new int[] {1}, 0, 2));
         columnMode.batch(0, 0).append();
-        columnMode.quantity(new int[] {3});
+        columnColumns.quantity(new int[] {3});
         assertThrows(IllegalStateException.class,
                 () -> columnMode.add(row(4, "D", new byte[] {4})));
         BatchProjectionStore.Batch positiveBatch = columnMode.batch()
@@ -331,10 +360,70 @@ class PerColumnFillRuntimeTest {
                 .payload(new byte[][] {new byte[] {4}});
         assertThrows(IllegalStateException.class, positiveBatch::append);
         columnMode.batch(0, 0).append();
-        columnMode.symbol(new String[] {"C"});
-        columnMode.payload(new byte[][] {new byte[] {3}});
+        columnColumns.symbol(new String[] {"C"});
+        columnColumns.payload(new byte[][] {new byte[] {3}});
         columnMode.seal();
         assertEquals(1, columnMode.size());
+    }
+
+    @Test
+    void failedRowEvaluationAndBatchPreflightLeaveModeUnset() {
+        BatchProjectionStore failedRow = BatchProjectionStore.create(0);
+        assertThrows(IllegalArgumentException.class,
+                () -> failedRow.add(new BatchProjection() {
+                    @Override
+                    public int quantity() {
+                        throw new IllegalArgumentException("quantity");
+                    }
+
+                    @Override
+                    public String symbol() {
+                        return "unused";
+                    }
+
+                    @Override
+                    public byte[] payload() {
+                        return new byte[] {0};
+                    }
+                }));
+        BatchProjectionStore.ColumnAppender afterFailedRow =
+                failedRow.columnAppender();
+        afterFailedRow.quantity(new int[] {1});
+        afterFailedRow.symbol(new String[] {"A"});
+        afterFailedRow.payload(new byte[][] {new byte[] {1}});
+        failedRow.seal();
+        assertEquals(1, failedRow.size());
+
+        BatchProjectionStore failedBatch = BatchProjectionStore.create(0);
+        BatchProjectionStore.Batch incomplete = failedBatch.batch()
+                .quantity(new int[] {2});
+        assertThrows(IllegalStateException.class, incomplete::append);
+        BatchProjectionStore.ColumnAppender afterFailedBatch =
+                failedBatch.columnAppender();
+        afterFailedBatch.quantity(new int[] {2});
+        afterFailedBatch.symbol(new String[] {"B"});
+        afterFailedBatch.payload(new byte[][] {new byte[] {2}});
+        failedBatch.seal();
+        assertEquals(1, failedBatch.size());
+    }
+
+    @Test
+    void accessorNamesDoNotChangeStoreOrObjectMethodResolution() {
+        StoreMethodNameProjectionStore store =
+                StoreMethodNameProjectionStore.create(0);
+
+        assertThrows(NullPointerException.class, () -> store.add(null));
+        assertTrue(store.equals(store));
+        assertFalse(store.equals(null));
+
+        StoreMethodNameProjectionStore.ColumnAppender columns =
+                store.columnAppender();
+        columns.add(new String[] {"value"});
+        columns.equals(new int[] {7});
+        store.seal();
+
+        assertEquals("value", store.viewAt(0).add());
+        assertEquals(7, store.viewAt(0).equals());
     }
 
     private static void assertGeneratedStoreContainsNoCoordinationApi(
@@ -416,4 +505,11 @@ class PerColumnFillRuntimeTest {
         assertEquals(symbol, row.symbol());
         assertSame(payload, row.payload());
     }
+}
+
+@ProjectionSchema
+interface StoreMethodNameProjection {
+    String add();
+
+    int equals();
 }

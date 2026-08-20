@@ -280,7 +280,7 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
-    void generatesTypedBatchApiWithBulkCopyImplementation()
+    void generatesTypedBatchAndColumnAppenderApis()
             throws IOException {
         Compilation compilation = compileWithProcessor(
                 "example.BatchSchema",
@@ -306,6 +306,13 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertTrue(batchStart >= 0, generated);
         assertTrue(batchEnd > batchStart, generated);
         String batch = generated.substring(batchStart, batchEnd);
+        int appenderStart = generated.indexOf(
+                "private final class ColumnAppenderImplementation");
+        int appenderEnd = generated.indexOf(
+                "private final class BatchImplementation", appenderStart);
+        assertTrue(appenderStart >= 0, generated);
+        assertTrue(appenderEnd > appenderStart, generated);
+        String appender = generated.substring(appenderStart, appenderEnd);
         assertEquals(1, countOccurrences(contract,
                 "intentionally omitting type-use annotations; the projection "
                         + "interface remains authoritative for those "
@@ -316,6 +323,9 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "Batch batch(int sourceFromIndex, int sourceToIndex)"),
                 contract);
         assertTrue(contract.contains("interface Batch"), contract);
+        assertTrue(contract.contains(
+                "default ColumnAppender columnAppender()"), contract);
+        assertTrue(contract.contains("interface ColumnAppender"), contract);
         assertTrue(contract.contains("void count(int[] source);"), contract);
         assertTrue(contract.contains(
                 "void count(int[] source, int sourceFromIndex, "
@@ -337,15 +347,18 @@ final class ProjectionSchemaProcessorCompilationTest {
                 "public example.BatchSchemaStore.Batch batch("
                         + "int sourceFromIndex, int sourceToIndex)"),
                 generated);
-        assertTrue(generated.contains("public void count(int[] source)"),
-                generated);
-        assertTrue(generated.contains(
+        assertTrue(appender.contains("public void count(int[] source)"),
+                appender);
+        assertTrue(appender.contains(
                 "public void labels("
                         + "java.util.List<java.lang.String>[] source)"),
-                generated);
-        assertTrue(generated.contains(
+                appender);
+        assertTrue(appender.contains(
                 "public void payload(byte[][] source, int sourceFromIndex, "
-                        + "int sourceToIndex)"), generated);
+                        + "int sourceToIndex)"), appender);
+        assertTrue(appender.contains(
+                "implements example.BatchSchemaStore.ColumnAppender"),
+                appender);
         assertFalse(generated.contains("batch(int rowCount)"), generated);
         assertTrue(batch.contains("private BatchImplementation()"), batch);
         assertTrue(batch.contains(
@@ -467,15 +480,17 @@ final class ProjectionSchemaProcessorCompilationTest {
                         + "PriceProjection.class, 1);\n"
                         + "        new PriceProjection"
                         + "__ColumnarProjectionStore(1);\n"
-                        + "        PriceProjectionStore columns = "
+                        + "        PriceProjectionStore columnStore = "
                         + "PriceProjectionStore.create(1);\n"
+                        + "        PriceProjectionStore.ColumnAppender "
+                        + "columns = columnStore.columnAppender();\n"
                         + "        columns.price(new double[]{55.5});\n"
                         + "        columns.price(new double[]{0.0, 65.6}, "
                         + "1, 2);\n"
                         + "        columns.symbol(new String[]{\"E\"});\n"
                         + "        columns.symbol(new String[]{\"ignored\", "
                         + "\"F\"}, 1, 2);\n"
-                        + "        columns.seal();\n"
+                        + "        columnStore.seal();\n"
                         + "    }\n"
                         + "}\n");
 
@@ -495,6 +510,12 @@ final class ProjectionSchemaProcessorCompilationTest {
                 contract);
         assertFalse(contract.contains("java.util.concurrent.Executor"),
                 contract);
+        assertTrue(contract.contains(
+                "default ColumnAppender columnAppender()"), contract);
+        assertTrue(contract.contains(
+                "Per-column filling is not supported by this "
+                        + "implementation"), contract);
+        assertTrue(contract.contains("interface ColumnAppender"), contract);
         assertTrue(contract.contains("void price(double[] source);"),
                 contract);
         assertTrue(contract.contains(
@@ -537,6 +558,19 @@ final class ProjectionSchemaProcessorCompilationTest {
         assertFalse(contract.contains("CyclicBarrier"), contract);
         assertTrue(implementation.contains(
                 "implements example.PriceProjectionStore"), implementation);
+        assertTrue(implementation.contains(
+                "public example.PriceProjectionStore.ColumnAppender "
+                        + "columnAppender()"), implementation);
+        int columnAppenderImplementation = implementation.indexOf(
+                "private final class ColumnAppenderImplementation");
+        assertTrue(columnAppenderImplementation >= 0, implementation);
+        assertFalse(implementation.substring(0, columnAppenderImplementation)
+                .contains("public void price(double[] source)"),
+                implementation);
+        assertTrue(implementation.contains(
+                "private final class ColumnAppenderImplementation implements "
+                        + "example.PriceProjectionStore.ColumnAppender"),
+                implementation);
         assertTrue(implementation.contains(
                 "private final class BatchImplementation implements "
                         + "example.PriceProjectionStore.Batch"),
@@ -1044,6 +1078,47 @@ final class ProjectionSchemaProcessorCompilationTest {
                 generated);
         assertTrue(generated.contains(
                 "BatchImplementation.Value[] source"), generated);
+    }
+
+    @Test
+    void columnAppenderNamesAreCollisionSafe() throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "ColumnAppender.Value",
+                        "package ColumnAppender;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "ColumnAppenderImplementation.Value",
+                        "package ColumnAppenderImplementation;\n"
+                                + "public final class Value { }\n"),
+                new StringSource(
+                        "example.ColumnAppenderCollision",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "interface ColumnAppenderCollision {\n"
+                                + "    ColumnAppender.Value first();\n"
+                                + "    ColumnAppenderImplementation.Value "
+                                + "second();\n"
+                                + "}\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSource(
+                compilation, "example.ColumnAppenderCollision");
+        String generated = generatedSource(
+                compilation, "example.ColumnAppenderCollision");
+        assertTrue(contract.contains(
+                "default ColumnAppender_ columnAppender()"), contract);
+        assertTrue(contract.contains("interface ColumnAppender_"), contract);
+        assertTrue(contract.contains(
+                "ColumnAppender.Value[] source"), contract);
+        assertTrue(contract.contains(
+                "ColumnAppenderImplementation.Value[] source"), contract);
+        assertTrue(generated.contains(
+                "private final class ColumnAppenderImplementation_ "
+                        + "implements example.ColumnAppenderCollisionStore."
+                        + "ColumnAppender_"), generated);
     }
 
     @Test
