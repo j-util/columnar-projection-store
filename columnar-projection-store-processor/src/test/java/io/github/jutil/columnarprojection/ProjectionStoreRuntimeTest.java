@@ -437,7 +437,8 @@ class ProjectionStoreRuntimeTest {
 
         int columnCount = 0;
         for (Field field : store.getClass().getDeclaredFields()) {
-            if (field.getName().startsWith("column")) {
+            if (field.getName().startsWith("column")
+                    && field.getType().isArray()) {
                 field.setAccessible(true);
                 assertEquals(expectedCapacity,
                         Array.getLength(field.get(store)), field.getName());

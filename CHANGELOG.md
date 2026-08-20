@@ -6,18 +6,32 @@ This file records user-visible changes to Columnar Projection Store.
 
 ### Added
 
-- Generated schema-specific store interfaces now provide an additive
-  `create(int, Executor)` factory. A positive batch appended to one of these
-  stores dispatches one copy operation per column to the caller-owned executor
-  and waits for every accepted operation before `append()` completes. The
-  existing `create(int)`, generated constructors, and sequential batch behavior
-  remain compatible.
-- Executor-backed append is synchronous and failure-atomic for logical rows.
-  Rejected submissions and copy failures wait uninterruptibly for accepted
-  tasks, clear attempted reference destinations, preserve interruption, and
-  leave the batch retryable. The store never shuts down its borrowed executor,
-  and callers must avoid executor starvation by ensuring queued copy tasks can
-  run while `append()` waits.
+- Generated schema-specific store interfaces now expose whole-array and
+  half-open-range methods named exactly after every projection accessor. Each
+  call synchronously appends only its own column, copies before returning, and
+  retains no source-array reference.
+- Distinct generated column methods may run concurrently. Each column has an
+  independent append count and grows only its own backing array; calls to the
+  same column remain externally single-writer.
+- Column filling keeps the logical size at zero until sealing. `seal()` checks
+  all generated column counts in O(number of columns), publishes the common
+  count on success, and reports useful column/count information on mismatch.
+  Unequal-count failures preserve the unsealed store and all copied values so
+  lagging columns can be filled before retrying.
+- Per-column filling preserves null reference elements, counts all-null arrays
+  by their full length, accepts empty no-ops, validates ranges and overflow
+  before mutation, and supports primitive, reference, generic, inherited,
+  covariant, boxed, and array-valued accessor types.
+
+### Changed
+
+- Positive row/batch mutation and positive per-column mutation now select
+  mutually exclusive building modes. Empty no-ops and validation failures do
+  not select a mode; `add` and typed batch append remain mixable with each other.
+- The unreleased concurrent batch-copy experiment was replaced rather than
+  carried into 1.3.0. The published 1.2.0 API remains compatible: generated
+  `create(int)`, the public generated constructor, `add`, both batch factories,
+  batch append, `seal`, `cursor`, and `viewAt` are unchanged.
 
 ## 1.2.0 - 2026-08-10
 

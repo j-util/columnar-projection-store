@@ -23,11 +23,11 @@ are unsupported. The library has no runtime dependencies and targets Java 8.
 Version `1.2.0` is the latest release and provides the generated, type-safe
 batch API for appending column arrays while preserving the row-oriented API and
 storage semantics introduced in `1.0.0`. Development version
-`1.3.0-SNAPSHOT` adds an optional caller-owned executor for copying the columns
-of one batch concurrently; the existing sequential API remains unchanged.
+`1.3.0-SNAPSHOT` adds generated synchronous methods for progressively filling
+individual columns; distinct columns may be filled concurrently.
 The installation example below therefore keeps the published `1.2.0`
-coordinate; the executor overload documented later is development API until a
-`1.3.0` release is available.
+coordinate; per-column filling is development API until a `1.3.0` release is
+available.
 Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
 and
@@ -161,17 +161,16 @@ public final class OrderExample {
 
 For schema-specific use, prefer the generated `<Projection>Store` interface.
 Its static `create(int)` method directly constructs the generated concrete
-implementation known at compile time while exposing the typed batch contract.
-The additive `create(int, Executor)` overload constructs the same kind of store
-but uses a caller-owned executor for per-column copying during batch append.
+implementation known at compile time while exposing typed batch and per-column
+filling methods.
 Because the contract and implementation are generated into the schema package,
 this path works in a named module even when that package is neither exported nor
 opened.
 
-The overload does not replace or change `create(int)`, the generated concrete
-store's public constructor, `ProjectionStores.create`, or the generated batch
-interface. Existing callers therefore keep the sequential behavior unless they
-explicitly select the new factory overload.
+Per-column filling does not replace or change `create(int)`, the generated
+concrete store's public constructor, `ProjectionStores.create`, or the generated
+batch interface. The common `ProjectionStore<T>` interface intentionally does
+not expose per-column methods.
 
 `ProjectionStores.create(Projection.class, ...)` instead performs runtime
 reflective discovery for schema-agnostic and row-oriented code. It returns the
@@ -194,7 +193,7 @@ abstractions remain in `io.github.jutil.columnarprojection`. Other generated
 implementation details, such as backing fields, private batch implementations,
 and view classes, are not supported API.
 
-## Typed batch append
+## Schema-specific column and batch append
 
 For a top-level projection named `PriceProjection`, the processor generates the
 public `PriceProjectionStore` contract and the compatible concrete
@@ -218,44 +217,53 @@ prices.batch()
         .append();
 ```
 
-To copy the columns of each batch concurrently, pass an executor to the
-generated factory. The store borrows the executor: neither `seal()` nor any
-other store operation shuts it down. The caller may reuse one executor across
-stores and remains responsible for its eventual shutdown. Sealing releases the
-store's reference to the executor.
+### Per-column filling
+
+For pipelines that already produce columns independently, the generated store
+also declares two synchronous methods with each projection accessor's exact
+name. The whole-array overload appends every element; the range overload appends
+the half-open source range:
 
 ```java
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-
-ExecutorService copyExecutor = Executors.newFixedThreadPool(2);
-try {
-    PriceProjectionStore prices =
-            PriceProjectionStore.create(expectedSize, copyExecutor);
-
-    prices.batch()
-            .price(new double[] {15.1, 25.2})
-            .symbol(new String[] {"A", "B"})
-            .append();
-    prices.seal();
-} finally {
-    copyExecutor.shutdown();
+@ProjectionSchema
+interface Trade {
+    long timestamp();
+    double price();
+    String symbol();
 }
+
+TradeStore trades = TradeStore.create(expectedSize);
+
+trades.timestamp(timestampChunk);
+trades.timestamp(moreTimestamps, fromIndex, toIndex);
+
+trades.price(priceChunk);
+trades.price(morePrices, differentFromIndex, differentToIndex);
+
+trades.symbol(symbolChunk);
+trades.symbol(moreSymbols);
+
+// Join any caller-managed filling tasks before sealing.
+trades.seal();
 ```
 
-`append()` remains synchronous: it returns or throws only after every accepted
-column-copy task has completed. Supplying an executor does not make the store
-itself safe for concurrent calls and does not make separate batches append
-concurrently. It parallelizes the independent column copies within one positive
-batch while preserving append order. On the success path, a positive batch
-submits exactly one copy task per generated column; a zero-row batch submits
-none.
+Each call copies before returning and retains no source-array reference, so the
+caller may reuse or mutate the source after successful return. Chunk boundaries
+may differ between columns. Each column owns its append count and grows only its
+own backing array. Calls for distinct columns may execute concurrently; calls
+to the same column require external single-writer serialization. No column call
+waits for another column.
 
-Passing a null executor to `create` throws `NullPointerException`. The supplied
-executor must continue accepting and executing work for the lifetime of every
-append that uses it. A direct executor is valid but executes the copies
-sequentially on the calling thread. Executor choice, sizing, shutdown, and reuse
-are caller policy; the store neither owns nor manages those resources.
+During per-column filling, `size()` remains zero. After the caller has joined
+all filling tasks, `seal()` compares every generated column count. A successful
+seal publishes the common count as the logical size. A mismatch throws
+`IllegalStateException` with column/count information, leaves the store
+unsealed, preserves all copied values, and permits corrective filling followed
+by another `seal()` call. A sealed multi-column store always requires equal
+column counts. Missing columns are not inferred as `null`, zero, or any other
+default. An untouched store still seals with size zero.
+
+### Typed batch behavior
 
 Common-range mode applies one half-open source range to every column:
 
@@ -335,8 +343,8 @@ annotations, and annotation-value arrays. It also follows default values
 declared by annotation members that are themselves current source. Arbitrary
 members and default values of external annotation types are not inspected.
 Type-use annotations can therefore affect collision-safe naming, but they
-remain intentionally omitted from generated batch signatures; the projection
-interface remains authoritative for them.
+remain intentionally omitted from generated source-array signatures; the
+projection interface remains authoritative for them.
 
 The processor cannot observe external types referenced only by module
 `uses`/`provides` directives, imports without a declaration-signature use,
@@ -364,18 +372,18 @@ evolution selects a different generated top-level name and stale output cannot
 be removed safely, compilation reports the specific stale name and requests a
 clean rebuild.
 
-For a parameterized accessor, a batch column preserves the resolved declared
-return type whenever every part of that type can legally be named from the
-generated store. For example, `List<String> labels()` produces a column method
-accepting `List<String>[]`; an `ArrayList<String>[]` is compatible while an
-`ArrayList<Integer>[]` is rejected at compilation. Backing columns still use
-erased, reifiable arrays such as `List[]`. If a generic argument is inaccessible
-to the generated top-level class, the batch column also falls back to the
-erased array type. This fallback preserves schemas accepted by earlier
-versions, but necessarily loses generic argument checking for that column.
-Generated batch signatures preserve source-nameable Java type structure and
-generic arguments, but intentionally omit type-use annotations. The projection
-interface remains authoritative for type-use annotations.
+For a parameterized accessor, its batch setter and per-column methods preserve
+the resolved declared return type whenever every part of that type can legally
+be named from the generated store. For example, `List<String> labels()` produces
+source parameters accepting `List<String>[]`; an `ArrayList<String>[]` is
+compatible while an `ArrayList<Integer>[]` is rejected at compilation. Backing
+columns still use erased, reifiable arrays such as `List[]`. If a generic
+argument is inaccessible to the generated top-level class, the source parameter
+falls back to the erased array type. This fallback preserves schemas accepted by
+earlier versions, but necessarily loses generic argument checking for that
+column. Generated source-array signatures preserve source-nameable Java type
+structure and generic arguments, but intentionally omit type-use annotations.
+The projection interface remains authoritative for type-use annotations.
 
 In whole-array mode, the first non-null array successfully assigned to a
 column establishes the row count. Every later column array must have exactly
@@ -396,7 +404,7 @@ method exactly once. An empty explicit range may be appended as a no-op without
 any column assignments; if a column is supplied, it is still validated against
 `sourceToIndex`.
 
-In both modes, a column rejects `null` with `NullPointerException`, and a
+In both batch modes, a column rejects `null` with `NullPointerException`, and a
 second successful assignment to the same column throws
 `IllegalStateException`. Missing-column failures leave the unfinished batch
 available for correction and retry.
@@ -412,28 +420,20 @@ stored values. Reference-valued elements still use the store's shallow-copy
 semantics: the references are copied, while the referenced objects, including
 array-valued projection results, are not cloned.
 
-For an executor-backed store, the same ownership rule extends through the full
-`append()` call: do not mutate a selected source range concurrently with
-`append()`. Because the call waits for all of its copy work, the caller may
-reuse or mutate its source arrays again after `append()` completes, whether it
-returns normally or throws.
+Per-column methods have different ownership: they validate and copy during the
+method call and never retain the source array. On successful return, replacing
+or mutating source-array elements cannot change stored column values. As with
+batch append, reference elements are shallow-copied; mutating an object already
+referenced by both source and store remains visible through that object.
 
-If the executor rejects a submission or a column copy fails, `append()` waits
-uninterruptibly for every already accepted copy task. It clears
-reference-valued destination slots in the attempted range, leaves the logical
-size unchanged, retains the source arrays, and rethrows the submission failure
-or one primary copy failure; additional failures are attached as suppressed
-exceptions.
-Primitive values already copied into the unused tail remain inaccessible. The
-batch remains unconsumed and may be retried after the cause is corrected.
-Capacity growth completed before submission is not rolled back.
-
-If the caller thread is interrupted while waiting, `append()` still waits for
-the accepted tasks to reach quiescence and restores the thread's interrupted
-status before returning or throwing. A rejected submission is rethrown as the
-same unchecked exception or error after quiescence. An unchecked exception or
-error from a copy task is likewise unwrapped and rethrown; an unexpected
-checked failure is wrapped in `IllegalStateException`.
+A null per-column source throws `NullPointerException` while the store is
+building. Range overloads require
+`0 <= sourceFromIndex <= sourceToIndex <= source.length` and validate the range
+before selecting a mutation mode or changing capacity. Null elements in
+reference columns are valid. An all-null reference array contributes its full
+length. Primitive columns have no null representation; boxed accessor types are
+reference columns and may contain null elements. Empty arrays and empty ranges
+are valid no-ops.
 
 The destination starts at the store's size when `append()` executes, not when
 the batch is created. Consequently, multiple unfinished whole-array and ranged
@@ -453,12 +453,29 @@ A new store is logically empty and in its building state. `expectedSize` is an
 initial-capacity hint, not a row limit; zero is valid and the store grows when
 necessary.
 
-- While building, call `add` and `size`. Calling `cursor` or `viewAt` before
-  sealing throws `IllegalStateException`.
-- `seal` permanently moves the store to its read state. Sealing an empty store
-  is valid, and repeated calls are harmless.
+- While building, use either row mode (`add` and batch append) or per-column
+  mode. Calling `cursor` or `viewAt` before sealing throws
+  `IllegalStateException`.
+- `seal` permanently moves the store to its read state after validating column
+  counts. Sealing an untouched empty store is valid, and repeated successful
+  calls are harmless. An unequal-count failure leaves the store building and
+  can be retried after corrective filling.
 - After sealing, `size`, `cursor`, and `viewAt` are available. `add` throws
-  `IllegalStateException`; a store cannot be unsealed.
+  `IllegalStateException`, as do all generated per-column methods; a store
+  cannot be unsealed.
+
+The first positive `add` or batch append selects row mode. The first positive
+per-column call selects column mode. Positive operations from the other mode are
+rejected before store mutation. Empty no-ops and validation failures do not
+select a mode. Existing `add` and batch append operations remain mixable with
+each other in row mode.
+
+In column mode, the store intentionally exposes no partially aligned logical
+rows: `size()` stays zero until a successful seal. `seal()` never waits for
+column filling and must not run concurrently with it. The caller is responsible
+for joining all filling tasks first. If counts differ, the exception reports a
+mismatched column pair and their counts; no values are discarded, and missing
+columns are never synthesized from null or primitive defaults.
 
 `add` immediately evaluates the projection accessors and copies their results;
 it never retains the source projection. Each accessor reached during an add
@@ -470,7 +487,7 @@ including `null`, are copied as references without a deep copy. The source
 projection must not be mutated concurrently while it is being read.
 
 While building, passing a `null` projection to `add` throws
-`NullPointerException`. Every generated factory overload and
+`NullPointerException`. Every generated factory and
 `ProjectionStores.create` rejects a negative `expectedSize` with
 `IllegalArgumentException`. For `ProjectionStores.create`, a `null` projection
 type throws `NullPointerException`, and a non-interface projection type produces
@@ -529,12 +546,11 @@ inherited accessors are resolved in the annotated schema's type context.
 
 ## Complexity and storage
 
-Let `c` be the number of stored accessors, `r` the current row count,
-`capacity` the current per-column backing-array length, and `newCapacity` its
-length after a growth step. The bounds below describe store overhead; they
-exclude work performed inside user-written accessor bodies and one-time JVM
-class loading. Executor-backed bounds describe generated work and exclude
-executor queueing delay or unrelated work performed by the executor.
+Let `c` be the number of stored accessors, `r` the current row count, `n` the
+number of selected source values, `capacity` a backing-array length, and
+`newCapacity` its length after a growth step. The bounds below describe store
+overhead; they exclude work performed inside user-written accessor bodies and
+one-time JVM class loading.
 
 | Operation | Time |
 | --- | --- |
@@ -542,20 +558,21 @@ executor queueing delay or unrelated work performed by the executor.
 | `add` | Amortized `O(c)`; a growth step is `O(c * newCapacity)` |
 | Generated `batch` construction | `O(c)` |
 | A batch column assignment | `O(1)` |
-| Sequential batch `append` | Without growth, `O(c * (n + 1))`; with growth, `O(c * (newCapacity + n + 1))`, where `n` is the selected row count |
-| Executor-backed batch `append` | The same total work and worst-case bounds as sequential append, plus `O(c)` task-submission and coordination work; capacity growth remains part of the calling thread's work |
-| `size`, `seal`, `cursor`, `viewAt` | `O(1)` |
+| Batch `append` | Without growth, `O(c * (n + 1))`; with growth, `O(c * (newCapacity + n + 1))` |
+| One per-column whole-array or range call | Without growth, `O(n)`; with growth, `O(newCapacity + n)` for that column only |
+| `seal` | `O(c)` count validation |
+| `size`, `cursor`, `viewAt` | `O(1)` |
 | Cursor `moveNext`, `current`, `rewind` | `O(1)` |
 | A generated projection accessor | `O(1)` |
 
-The retained column storage is `O(c * capacity)` array slots. Growth can
-temporarily require another `O(c * newCapacity)` slots while existing columns
-of length `capacity` are copied. At the peak, both generations can be live, for
-`O(c * (capacity + newCapacity))` backing-array slots. This includes a large
+In row mode, retained column storage is `O(c * capacity)` array slots. Shared
+row/batch growth can temporarily require another `O(c * newCapacity)` slots
+while existing columns are copied. At the peak, both generations can be live,
+for `O(c * (capacity + newCapacity))` backing-array slots. This includes a large
 batch that makes `newCapacity` jump from `capacity` to at least `r + n`; its
-temporary growth storage is not bounded by `O(c * r)`.
-`expectedSize` can avoid those copies when the eventual row count is known, but
-it allocates that initial capacity for every column.
+temporary growth storage is not bounded by `O(c * r)`. `expectedSize` can avoid
+those copies when the eventual row count is known, but it allocates that initial
+capacity for every column.
 
 For a positive batch, append time is linear in the total number of copied
 values (`c * n`) in addition to any growth work. An unfinished batch retains
@@ -564,29 +581,29 @@ appended. In common-range mode, caller-owned source arrays may be much longer
 than `n`, so the amount of source storage kept reachable is not bounded by the
 selected row count.
 
-An executor-backed positive append additionally uses `O(c)` transient task and
-coordination objects. Its column copies are independent, but the API does not
-promise a latency improvement: scheduling overhead and shared memory bandwidth
-can make parallel copying slower, especially for narrow schemas or small
-batches. Cleaning reference-valued destination slots after a rejected
-submission or failed copy can perform another `O(c * n)` writes in the worst
-case.
+In column mode, capacities may differ. Retained backing storage is the sum of
+the individual column capacities. A growth step temporarily retains only that
+column's old array and new array and never grows, copies, or replaces another
+column. A per-column call uses constant additional bookkeeping beyond any new
+backing array allocated for growth, and it retains no caller source after
+successful return.
 
 ## Thread safety
 
-Building a store is not thread-safe. Do not call `add`, `batch`, batch column
-methods, batch `append`, or `seal` concurrently, and do not read through views
-or cursors while building. After `seal()` and safe publication to reader
-threads, the store and stable indexed views may be read concurrently. Each
-thread must use its own cursor; cursors are not thread-safe.
+Calls to generated per-column methods for distinct columns may execute
+concurrently. Each column is single-writer: calls targeting the same column must
+be externally serialized. A per-column call never waits for another column and
+does not lock or grow another column on its normal copy path.
 
-An executor-backed append is the only internal exception to that external
-single-threaded building contract: generated copy tasks write disjoint column
-arrays, and the calling thread waits for them before publishing the new logical
-size. Do not call `append()` from a worker of the same bounded executor when all
-of that executor's workers could be occupied waiting in such calls. The queued
-column copies would then have no worker available and the calls could deadlock
-through thread starvation.
+Do not invoke `add`, either `batch` factory, batch column methods, batch
+`append`, `size`, `seal`, `cursor`, or `viewAt` concurrently with per-column
+filling. Join the caller-managed filling tasks before sealing. `seal()` performs
+only count validation and never waits for filling to finish. Row mutation and
+batch mutation remain externally serialized with each other.
+
+After `seal()` and safe publication to reader threads, the store and stable
+indexed views may be read concurrently. Each thread must use its own cursor;
+cursors are not thread-safe.
 
 Safe publication applies only to the stored references. The library does not
 make mutable referenced objects immutable or thread-safe.

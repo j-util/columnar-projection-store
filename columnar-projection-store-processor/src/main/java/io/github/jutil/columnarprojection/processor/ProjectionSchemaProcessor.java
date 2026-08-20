@@ -49,7 +49,8 @@ import javax.tools.JavaFileObject;
  *
  * <p>The processor is normally discovered by the Java compiler through its
  * service-provider configuration. The generated schema-specific store
- * interface is the recommended schema-specific API and directly constructs its
+ * interface is the recommended schema-specific API, exposes typed batch and
+ * synchronous per-column filling methods, and directly constructs its
  * compile-time-known generated implementation. Its ordinary top-level name is
  * the schema's binary simple name followed by {@code Store}; package and
  * required-source-name conflicts may add trailing underscores. The generated
@@ -1117,7 +1118,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 implementationQualifiedName,
                 batchTypeName(schema, accessors),
                 nestedTypeName("BatchImplementation", schema, accessors),
-                nestedTypeName("ColumnCopyOperation", schema, accessors),
                 nestedTypeName("GeneratedProvenance", schema, accessors));
     }
 
@@ -1409,17 +1409,26 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, " * Schema-specific public store contract for {@link "
                 + model.schemaName + "}.");
         line(source, " *");
-        line(source, " * <p>This interface exposes typed whole-array and "
-                + "common-range batch appends in addition to the row-oriented "
-                + "operations inherited from {@link io.github.jutil."
-                + "columnarprojection.ProjectionStore}. Building and batch "
-                + "mutation are not thread-safe. After sealing and safe "
-                + "publication, reads follow the inherited store contract.");
-        line(source, " * The static factory methods directly construct the "
-                + "compile-time-known generated implementation. The "
-                + "one-argument factory keeps batch copying sequential; the "
-                + "executor overload may copy independent columns "
-                + "concurrently while {@code append()} waits for completion.");
+        line(source, " * <p>This interface exposes synchronous per-column "
+                + "filling and typed whole-array and common-range batch "
+                + "appends in addition to the row-oriented operations "
+                + "inherited from {@link io.github.jutil.columnarprojection."
+                + "ProjectionStore}. Distinct per-column methods may run "
+                + "concurrently while the store is building; calls to the "
+                + "same column require external single-writer serialization. "
+                + "All other building operations remain externally "
+                + "serialized. After sealing and safe publication, reads "
+                + "follow the inherited store contract.");
+        line(source, " * The static factory directly constructs the "
+                + "compile-time-known generated implementation.");
+        line(source, " *");
+        line(source, " * <p>During per-column filling, logical size remains "
+                + "zero. After the caller joins all filling work, {@code "
+                + "seal()} validates equal appended counts and publishes that "
+                + "count. A mismatch leaves the store unsealed and preserves "
+                + "all values for corrective filling. Missing columns are "
+                + "not inferred as null or primitive defaults. Sealing never "
+                + "waits for filling.");
         line(source, " */");
         appendProvenanceAnnotation(
                 source, model, PROVENANCE_ROLE_CONTRACT);
@@ -1449,42 +1458,71 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "(expectedSize);");
         line(source, "    }");
         line(source, "");
-        line(source, "    /**");
-        line(source, "     * Creates an empty schema-specific store that may "
-                + "copy batch columns concurrently.");
-        line(source, "     *");
-        line(source, "     * <p>A positive batch submits one independent copy "
-                + "operation per column to {@code executor}. Its {@code "
-                + "append()} call remains synchronous and publishes the new "
-                + "logical size only after every submitted copy succeeds. "
-                + "The executor is borrowed: this store never shuts it down. "
-                + "The requested size is a capacity hint, not a row limit.");
-        line(source, "     * The caller must keep the executor able to run "
-                + "accepted work until each {@code append()} returns; using "
-                + "the same saturated bounded executor to call {@code "
-                + "append()} can cause thread starvation.");
-        line(source, "     *");
-        line(source, "     * @param expectedSize the expected number of rows, "
-                + "or zero when unknown");
-        line(source, "     * @param executor the caller-owned executor used "
-                + "for column copies");
-        line(source, "     * @return a new empty store in the building state");
-        line(source, "     * @throws java.lang.IllegalArgumentException if "
-                + "{@code expectedSize} is negative");
-        line(source, "     * @throws java.lang.NullPointerException if "
-                + "{@code executor} is null");
-        line(source, "     */");
-        line(source, "    static " + model.storeSimpleName
-                + " create(int expectedSize, "
-                + "java.util.concurrent.Executor executor) {");
-        line(source, "        return new " + model.implementationSimpleName
-                + "(expectedSize, java.util.Objects.requireNonNull("
-                + "executor, \"executor\"));");
-        line(source, "    }");
-        line(source, "");
+        appendColumnFillContract(source, model);
         appendBatchContract(source, model);
         line(source, "}");
         return source.toString();
+    }
+
+    private void appendColumnFillContract(
+            StringBuilder source, SchemaModel model) {
+        for (Accessor accessor : model.accessors) {
+            String sourceType = batchSourceColumnType(accessor);
+            line(source, "    /**");
+            line(source, "     * Synchronously appends every value in {@code "
+                    + "source} to only the {@code " + accessor.name
+                    + "} column.");
+            line(source, "     *");
+            line(source, "     * <p>The source array is not retained. Calls "
+                    + "for distinct columns may execute concurrently. Calls "
+                    + "for this column require external single-writer "
+                    + "serialization. A successful empty input is a no-op "
+                    + "and does not select a mutation mode.");
+            line(source, "     * Reference elements, including null, are "
+                    + "shallow-copied; an all-null array contributes its full "
+                    + "length.");
+            line(source, "     *");
+            line(source, "     * @param source the non-null source column");
+            line(source, "     * @throws java.lang.NullPointerException if "
+                    + "{@code source} is null");
+            line(source, "     * @throws java.lang.IllegalStateException if "
+                    + "this store has been sealed, row or batch mutation has "
+                    + "started, or the maximum column size would be exceeded");
+            line(source, "     */");
+            line(source, "    void " + accessor.name + "(" + sourceType
+                    + " source);");
+            line(source, "");
+            line(source, "    /**");
+            line(source, "     * Synchronously appends the half-open range "
+                    + "{@code [sourceFromIndex, sourceToIndex)} from {@code "
+                    + "source} to only the {@code " + accessor.name
+                    + "} column.");
+            line(source, "     *");
+            line(source, "     * <p>The source array is not retained. Calls "
+                    + "for distinct columns may execute concurrently. Calls "
+                    + "for this column require external single-writer "
+                    + "serialization. A successful empty range is a no-op "
+                    + "and does not select a mutation mode.");
+            line(source, "     * The range is validated before mutation. "
+                    + "Reference elements, including null, are shallow-copied.");
+            line(source, "     *");
+            line(source, "     * @param source the non-null source column");
+            line(source, "     * @param sourceFromIndex the inclusive source "
+                    + "index");
+            line(source, "     * @param sourceToIndex the exclusive source "
+                    + "index");
+            line(source, "     * @throws java.lang.NullPointerException if "
+                    + "{@code source} is null");
+            line(source, "     * @throws java.lang.IndexOutOfBoundsException "
+                    + "if the range is outside {@code source}");
+            line(source, "     * @throws java.lang.IllegalStateException if "
+                    + "this store has been sealed, row or batch mutation has "
+                    + "started, or the maximum column size would be exceeded");
+            line(source, "     */");
+            line(source, "    void " + accessor.name + "(" + sourceType
+                    + " source, int sourceFromIndex, int sourceToIndex);");
+            line(source, "");
+        }
     }
 
     private void appendBatchContract(
@@ -1558,21 +1596,11 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 + "one-use no-ops. Positive batches perform one bulk array "
                 + "copy per column, then publish the new logical size and "
                 + "clear retained source references.");
-        line(source, "         * For an executor-backed store, those copies "
-                + "are submitted independently and this method waits for "
-                + "every accepted task, even if its calling thread is "
-                + "interrupted. It restores the interrupt status before "
-                + "returning or throwing.");
-        line(source, "         * If submission or copying fails, reference-"
-                + "valued destination slots written beyond the logical size "
-                + "are cleared, source arrays remain retained, and the "
-                + "unconsumed batch may be retried. Capacity growth is not "
-                + "rolled back.");
         line(source, "         *");
         line(source, "         * @throws java.lang.IllegalStateException if "
                 + "a required column is missing, this batch was already "
-                + "appended, the store was sealed, or the maximum store size "
-                + "would be exceeded");
+                + "appended, the store was sealed, per-column filling has "
+                + "started, or the maximum store size would be exceeded");
         line(source, "         */");
         line(source, "        void append();");
         line(source, "    }");
@@ -1626,10 +1654,14 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, " *");
         line(source, " * <p>Rows may be added individually or appended from "
                 + "typed column arrays while the store is in its building "
-                + "state.");
-        line(source, " * Building and batch mutation are not thread-safe. "
-                + "After sealing and safe publication, reads follow the "
-                + "thread-safety contract of {@link io.github.jutil."
+                + "state. Alternatively, generated methods progressively "
+                + "fill individual columns. Positive row or batch mutation "
+                + "cannot be mixed with positive per-column mutation.");
+        line(source, " * Distinct per-column methods may run concurrently; "
+                + "each individual column is single-writer. Other building "
+                + "operations are not thread-safe and must not overlap column "
+                + "filling. After sealing and safe publication, reads follow "
+                + "the thread-safety contract of {@link io.github.jutil."
                 + "columnarprojection.ProjectionStore}.");
         line(source, " *");
         line(source, " * <p>The public constructor remains supported for "
@@ -1643,12 +1675,18 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "        implements " + model.storeQualifiedName + " {");
         line(source, "");
         appendProvenanceType(source, model.provenanceTypeName);
+        line(source, "    private static final int MUTATION_MODE_UNSET = 0;");
+        line(source, "    private static final int MUTATION_MODE_ROW = 1;");
+        line(source, "    private static final int MUTATION_MODE_COLUMN = 2;");
+        line(source, "");
         line(source, "    private int size;");
         line(source, "    private int capacity;");
         line(source, "    private boolean sealed;");
-        line(source, "    private java.util.concurrent.Executor "
-                + "batchCopyExecutor;");
+        line(source, "    private final java.util.concurrent.atomic."
+                + "AtomicInteger mutationMode = new java.util.concurrent."
+                + "atomic.AtomicInteger(MUTATION_MODE_UNSET);");
         for (int index = 0; index < model.accessors.size(); index++) {
+            line(source, "    private int column" + index + "Count;");
             line(source, "    private "
                     + storageColumnType(model.accessors.get(index))
                     + " column" + index + ";");
@@ -1660,8 +1698,11 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 model.storeQualifiedName + "." + model.batchTypeName,
                 model.batchImplementationTypeName);
         appendAdd(source, schemaName, model.accessors);
+        appendColumnFillMethods(source, model.accessors);
         appendStoreMethods(source, schemaName);
         appendEnsureCapacity(source, model.accessors);
+        appendColumnCountSupport(source, model.accessors);
+        appendMutationModeSupport(source);
         appendBatch(
                 source,
                 model.accessors,
@@ -1669,8 +1710,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 model.batchImplementationTypeName);
         appendProjectionView(source, schemaName, model.accessors);
         appendCursor(source, schemaName);
-        appendConcurrentCopySupport(
-                source, model.columnCopyOperationTypeName);
         line(source, "}");
         return source.toString();
     }
@@ -1737,14 +1776,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
         line(source, "    }");
         line(source, "");
-        line(source, "    " + generatedSimpleName
-                + "(int expectedSize, "
-                + "java.util.concurrent.Executor executor) {");
-        line(source, "        this(expectedSize);");
-        line(source, "        this.batchCopyExecutor = "
-                + "java.util.Objects.requireNonNull(executor, \"executor\");");
-        line(source, "    }");
-        line(source, "");
     }
 
     private void appendBatchFactories(
@@ -1798,6 +1829,8 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "            throw new java.lang.NullPointerException("
                 + "\"projection\");");
         line(source, "        }");
+        line(source, "        requireCompatibleMutationMode("
+                + "MUTATION_MODE_ROW);");
         line(source, "        if (size == java.lang.Integer.MAX_VALUE) {");
         line(source, "            throw new java.lang.IllegalStateException("
                 + "\"Maximum store size reached\");");
@@ -1812,6 +1845,7 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "            throw new java.lang.IllegalStateException("
                 + "\"Store was sealed while reading the projection\");");
         line(source, "        }");
+        line(source, "        selectMutationMode(MUTATION_MODE_ROW);");
         line(source, "        ensureCapacity(size + 1);");
         line(source, "        final int rowIndex = size;");
         for (int index = 0; index < accessors.size(); index++) {
@@ -1819,8 +1853,80 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                     + index + ";");
         }
         line(source, "        size = rowIndex + 1;");
+        line(source, "        setColumnCounts(size);");
         line(source, "    }");
         line(source, "");
+    }
+
+    private void appendColumnFillMethods(
+            StringBuilder source, List<Accessor> accessors) {
+        for (int index = 0; index < accessors.size(); index++) {
+            Accessor accessor = accessors.get(index);
+            String sourceType = batchSourceColumnType(accessor);
+            line(source, "    /** {@inheritDoc} */");
+            line(source, "    @java.lang.Override");
+            line(source, "    public void " + accessor.name + "("
+                    + sourceType + " source) {");
+            line(source, "        if (sealed) {");
+            line(source, "            throw new java.lang.IllegalStateException("
+                    + "\"Store has been sealed\");");
+            line(source, "        }");
+            line(source, "        if (source == null) {");
+            line(source, "            throw new java.lang.NullPointerException("
+                    + "\"source\");");
+            line(source, "        }");
+            line(source, "        " + accessor.name
+                    + "(source, 0, source.length);");
+            line(source, "    }");
+            line(source, "");
+            line(source, "    /** {@inheritDoc} */");
+            line(source, "    @java.lang.Override");
+            line(source, "    public void " + accessor.name + "("
+                    + sourceType + " source, int sourceFromIndex, "
+                    + "int sourceToIndex) {");
+            line(source, "        if (sealed) {");
+            line(source, "            throw new java.lang.IllegalStateException("
+                    + "\"Store has been sealed\");");
+            line(source, "        }");
+            line(source, "        if (source == null) {");
+            line(source, "            throw new java.lang.NullPointerException("
+                    + "\"source\");");
+            line(source, "        }");
+            line(source, "        if (sourceFromIndex < 0");
+            line(source, "                || sourceFromIndex > sourceToIndex");
+            line(source, "                || sourceToIndex > source.length) {");
+            line(source, "            throw new java.lang."
+                    + "IndexOutOfBoundsException(");
+            line(source, "                    \"source range: [\" + "
+                    + "sourceFromIndex + \", \" + sourceToIndex + \")\"");
+            line(source, "                    + \", source length: \" + "
+                    + "source.length);");
+            line(source, "        }");
+            line(source, "        final int appendCount = sourceToIndex "
+                    + "- sourceFromIndex;");
+            line(source, "        if (appendCount == 0) {");
+            line(source, "            return;");
+            line(source, "        }");
+            line(source, "        final int currentCount = column" + index
+                    + "Count;");
+            line(source, "        if (appendCount > java.lang.Integer.MAX_VALUE "
+                    + "- currentCount) {");
+            line(source, "            throw new java.lang.IllegalStateException("
+                    + "\"Maximum column size reached: " + accessor.name
+                    + "\");");
+            line(source, "        }");
+            line(source, "        selectMutationMode(MUTATION_MODE_COLUMN);");
+            line(source, "        final int requiredCount = currentCount "
+                    + "+ appendCount;");
+            line(source, "        ensureColumn" + index
+                    + "Capacity(requiredCount);");
+            line(source, "        java.lang.System.arraycopy(source, "
+                    + "sourceFromIndex, column" + index
+                    + ", currentCount, appendCount);");
+            line(source, "        column" + index + "Count = requiredCount;");
+            line(source, "    }");
+            line(source, "");
+        }
     }
 
     private void appendStoreMethods(
@@ -1834,8 +1940,13 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "    /** {@inheritDoc} */");
         line(source, "    @java.lang.Override");
         line(source, "    public void seal() {");
+        line(source, "        if (sealed) {");
+        line(source, "            return;");
+        line(source, "        }");
+        line(source, "        final int columnCount = column0Count;");
+        line(source, "        requireEqualColumnCounts(columnCount);");
+        line(source, "        size = columnCount;");
         line(source, "        sealed = true;");
-        line(source, "        batchCopyExecutor = null;");
         line(source, "    }");
         line(source, "");
         line(source, "    /** {@inheritDoc} */");
@@ -1890,6 +2001,119 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                     + ";");
         }
         line(source, "        capacity = newCapacity;");
+        line(source, "    }");
+        line(source, "");
+        for (int index = 0; index < accessors.size(); index++) {
+            line(source, "    private void ensureColumn" + index
+                    + "Capacity(int minimumCapacity) {");
+            line(source, "        final int currentCapacity = column" + index
+                    + ".length;");
+            line(source, "        if (minimumCapacity <= currentCapacity) {");
+            line(source, "            return;");
+            line(source, "        }");
+            line(source, "        int newCapacity = currentCapacity "
+                    + "+ (currentCapacity >> 1) + 1;");
+            line(source, "        if (newCapacity < 0) {");
+            line(source, "            newCapacity = "
+                    + "java.lang.Integer.MAX_VALUE;");
+            line(source, "        } else if (newCapacity < minimumCapacity) {");
+            line(source, "            newCapacity = minimumCapacity;");
+            line(source, "        }");
+            line(source, "        column" + index + " = java.util.Arrays."
+                    + "copyOf(column" + index + ", newCapacity);");
+            line(source, "    }");
+            line(source, "");
+        }
+    }
+
+    private void appendColumnCountSupport(
+            StringBuilder source, List<Accessor> accessors) {
+        line(source, "    private void setColumnCounts(int count) {");
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            line(source, "        setColumnCounts"
+                    + batchHelperIndex(chunkStart) + "(count);");
+        }
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private void requireEqualColumnCounts("
+                + "int expectedCount) {");
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            line(source, "        requireEqualColumnCounts"
+                    + batchHelperIndex(chunkStart) + "(expectedCount);");
+        }
+        line(source, "    }");
+        line(source, "");
+
+        for (int chunkStart = 0; chunkStart < accessors.size();
+                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
+            int chunkEnd = Math.min(
+                    chunkStart + BATCH_HELPER_COLUMN_LIMIT, accessors.size());
+            int helperIndex = batchHelperIndex(chunkStart);
+            line(source, "    private void setColumnCounts" + helperIndex
+                    + "(int count) {");
+            for (int index = chunkStart; index < chunkEnd; index++) {
+                line(source, "        column" + index + "Count = count;");
+            }
+            line(source, "    }");
+            line(source, "");
+            line(source, "    private void requireEqualColumnCounts"
+                    + helperIndex + "(int expectedCount) {");
+            for (int index = Math.max(1, chunkStart);
+                    index < chunkEnd; index++) {
+                line(source, "        if (column" + index
+                        + "Count != expectedCount) {");
+                line(source, "            throw new java.lang."
+                        + "IllegalStateException(");
+                line(source, "                    \"Column "
+                        + accessors.get(0).name + " count \" + expectedCount");
+                line(source, "                    + \" does not match column "
+                        + accessors.get(index).name + " count \" + column"
+                        + index + "Count);");
+                line(source, "        }");
+            }
+            line(source, "    }");
+            line(source, "");
+        }
+    }
+
+    private void appendMutationModeSupport(StringBuilder source) {
+        line(source, "    private void requireCompatibleMutationMode("
+                + "int requiredMode) {");
+        line(source, "        final int currentMode = mutationMode.get();");
+        line(source, "        if (currentMode != MUTATION_MODE_UNSET");
+        line(source, "                && currentMode != requiredMode) {");
+        line(source, "            throw incompatibleMutationMode("
+                + "requiredMode);");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private void selectMutationMode(int requiredMode) {");
+        line(source, "        int currentMode = mutationMode.get();");
+        line(source, "        if (currentMode == requiredMode) {");
+        line(source, "            return;");
+        line(source, "        }");
+        line(source, "        if (currentMode == MUTATION_MODE_UNSET");
+        line(source, "                && mutationMode.compareAndSet("
+                + "MUTATION_MODE_UNSET, requiredMode)) {");
+        line(source, "            return;");
+        line(source, "        }");
+        line(source, "        currentMode = mutationMode.get();");
+        line(source, "        if (currentMode != requiredMode) {");
+        line(source, "            throw incompatibleMutationMode("
+                + "requiredMode);");
+        line(source, "        }");
+        line(source, "    }");
+        line(source, "");
+        line(source, "    private static java.lang.IllegalStateException "
+                + "incompatibleMutationMode(int requiredMode) {");
+        line(source, "        return new java.lang.IllegalStateException("
+                + "requiredMode == MUTATION_MODE_ROW");
+        line(source, "                ? \"Per-column filling has already "
+                + "started\"");
+        line(source, "                : \"Row or batch mutation has already "
+                + "started\");");
         line(source, "    }");
         line(source, "");
     }
@@ -2006,26 +2230,23 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "                throw new java.lang.IllegalStateException("
                 + "\"Maximum store size reached\");");
         line(source, "            }");
+        line(source, "            if (rowCount != 0) {");
+        line(source, "                selectMutationMode(MUTATION_MODE_ROW);");
+        line(source, "            }");
         line(source, "            final int destinationOffset = size;");
         line(source, "            final int requiredSize = destinationOffset "
                 + "+ rowCount;");
         line(source, "            ensureCapacity(requiredSize);");
         line(source, "            if (rowCount != 0) {");
-        line(source, "                final java.util.concurrent.Executor "
-                + "executor = batchCopyExecutor;");
-        line(source, "                if (executor == null) {");
         for (int chunkStart = 0; chunkStart < accessors.size();
                 chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
-            line(source, "                    copyColumns"
+            line(source, "                copyColumns"
                     + batchHelperIndex(chunkStart)
                     + "(destinationOffset);");
         }
-        line(source, "                } else {");
-        line(source, "                    copyColumnsConcurrently(executor, "
-                + "destinationOffset, requiredSize);");
-        line(source, "                }");
+        line(source, "                size = requiredSize;");
+        line(source, "                setColumnCounts(size);");
         line(source, "            }");
-        line(source, "            size = requiredSize;");
         for (int chunkStart = 0; chunkStart < accessors.size();
                 chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
             line(source, "            clearSources"
@@ -2034,7 +2255,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "            consumed = true;");
         line(source, "        }");
         appendBatchHelpers(source, accessors);
-        appendConcurrentBatchMethods(source, accessors);
         line(source, "");
         line(source, "        private void requireUnconsumed() {");
         line(source, "            if (consumed) {");
@@ -2086,204 +2306,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             }
             line(source, "        }");
         }
-    }
-
-    private void appendConcurrentBatchMethods(
-            StringBuilder source, List<Accessor> accessors) {
-        line(source, "");
-        line(source, "        private void copyColumnsConcurrently(");
-        line(source, "                java.util.concurrent.Executor executor,");
-        line(source, "                int destinationOffset,");
-        line(source, "                int requiredSize) {");
-        line(source, "            final java.util.concurrent.Future<?>[] "
-                + "copyTasks = new java.util.concurrent.Future<?>["
-                + accessors.size() + "];");
-        line(source, "            java.lang.Throwable submissionFailure = "
-                + "null;");
-        line(source, "            try {");
-        for (int chunkStart = 0; chunkStart < accessors.size();
-                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
-            line(source, "                submitColumnCopies"
-                    + batchHelperIndex(chunkStart)
-                    + "(copyTasks, executor, destinationOffset);");
-        }
-        line(source, "            } catch (java.lang.Throwable failure) {");
-        line(source, "                submissionFailure = failure;");
-        line(source, "            }");
-        line(source, "            final java.lang.Throwable copyFailure = "
-                + "awaitColumnCopies(copyTasks);");
-        line(source, "            final java.lang.Throwable failure = "
-                + "combineCopyFailures(submissionFailure, copyFailure);");
-        line(source, "            if (failure != null) {");
-        for (int chunkStart = 0; chunkStart < accessors.size();
-                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
-            line(source, "                clearFailedReferences"
-                    + batchHelperIndex(chunkStart)
-                    + "(destinationOffset, requiredSize);");
-        }
-        line(source, "                throw propagateCopyFailure(failure);");
-        line(source, "            }");
-        line(source, "        }");
-
-        for (int chunkStart = 0; chunkStart < accessors.size();
-                chunkStart += BATCH_HELPER_COLUMN_LIMIT) {
-            int chunkEnd = Math.min(
-                    chunkStart + BATCH_HELPER_COLUMN_LIMIT, accessors.size());
-            int helperIndex = batchHelperIndex(chunkStart);
-
-            line(source, "");
-            line(source, "        private void submitColumnCopies"
-                    + helperIndex + "(");
-            line(source, "                java.util.concurrent.Future<?>[] "
-                    + "copyTasks,");
-            line(source, "                java.util.concurrent.Executor "
-                    + "executor,");
-            line(source, "                int destinationOffset) {");
-            for (int index = chunkStart; index < chunkEnd; index++) {
-                line(source, "            copyTasks[" + index + "] = "
-                        + "submitColumnCopy(source" + index
-                        + ", column" + index
-                        + ", sourceFromIndex, destinationOffset, rowCount, "
-                        + "executor);");
-            }
-            line(source, "        }");
-
-            line(source, "");
-            line(source, "        private void clearFailedReferences"
-                    + helperIndex + "(int fromIndex, int toIndex) {");
-            for (int index = chunkStart; index < chunkEnd; index++) {
-                if (!accessors.get(index).erasedReturnType
-                        .getKind().isPrimitive()) {
-                    line(source, "            java.util.Arrays.fill(column"
-                            + index + ", fromIndex, toIndex, null);");
-                }
-            }
-            line(source, "        }");
-        }
-    }
-
-    private void appendConcurrentCopySupport(
-            StringBuilder source, String columnCopyOperationTypeName) {
-        line(source, "    private static java.util.concurrent.Future<?> "
-                + "submitColumnCopy(");
-        line(source, "            java.lang.Object source,");
-        line(source, "            java.lang.Object destination,");
-        line(source, "            int sourceFromIndex,");
-        line(source, "            int destinationOffset,");
-        line(source, "            int rowCount,");
-        line(source, "            java.util.concurrent.Executor executor) {");
-        line(source, "        final java.util.concurrent.FutureTask<"
-                + "java.lang.Void> task = new java.util.concurrent."
-                + "FutureTask<java.lang.Void>(");
-        line(source, "                new " + columnCopyOperationTypeName
-                + "(source, destination, sourceFromIndex, "
-                + "destinationOffset, rowCount));");
-        line(source, "        executor.execute(task);");
-        line(source, "        return task;");
-        line(source, "    }");
-        line(source, "");
-        line(source, "    private static java.lang.Throwable "
-                + "awaitColumnCopies(");
-        line(source, "            java.util.concurrent.Future<?>[] tasks) {");
-        line(source, "        java.lang.Throwable failure = null;");
-        line(source, "        boolean interrupted = false;");
-        line(source, "        try {");
-        line(source, "            for (java.util.concurrent.Future<?> task "
-                + ": tasks) {");
-        line(source, "                if (task == null) {");
-        line(source, "                    continue;");
-        line(source, "                }");
-        line(source, "                boolean completed = false;");
-        line(source, "                while (!completed) {");
-        line(source, "                    try {");
-        line(source, "                        task.get();");
-        line(source, "                        completed = true;");
-        line(source, "                    } catch (java.lang.InterruptedException "
-                + "exception) {");
-        line(source, "                        interrupted = true;");
-        line(source, "                    } catch (java.util.concurrent."
-                + "ExecutionException exception) {");
-        line(source, "                        final java.lang.Throwable cause = "
-                + "exception.getCause();");
-        line(source, "                        failure = combineCopyFailures(");
-        line(source, "                                failure, cause == null "
-                + "? exception : cause);");
-        line(source, "                        completed = true;");
-        line(source, "                    } catch (java.util.concurrent."
-                + "CancellationException exception) {");
-        line(source, "                        failure = combineCopyFailures(");
-        line(source, "                                failure, exception);");
-        line(source, "                        completed = true;");
-        line(source, "                    }");
-        line(source, "                }");
-        line(source, "            }");
-        line(source, "        } finally {");
-        line(source, "            if (interrupted) {");
-        line(source, "                java.lang.Thread.currentThread()."
-                + "interrupt();");
-        line(source, "            }");
-        line(source, "        }");
-        line(source, "        return failure;");
-        line(source, "    }");
-        line(source, "");
-        line(source, "    private static java.lang.Throwable "
-                + "combineCopyFailures(");
-        line(source, "            java.lang.Throwable primary,");
-        line(source, "            java.lang.Throwable additional) {");
-        line(source, "        if (primary == null) {");
-        line(source, "            return additional;");
-        line(source, "        }");
-        line(source, "        if (additional != null && additional != primary) {");
-        line(source, "            primary.addSuppressed(additional);");
-        line(source, "        }");
-        line(source, "        return primary;");
-        line(source, "    }");
-        line(source, "");
-        line(source, "    private static java.lang.RuntimeException "
-                + "propagateCopyFailure(java.lang.Throwable failure) {");
-        line(source, "        if (failure instanceof "
-                + "java.lang.RuntimeException) {");
-        line(source, "            return (java.lang.RuntimeException) failure;");
-        line(source, "        }");
-        line(source, "        if (failure instanceof java.lang.Error) {");
-        line(source, "            throw (java.lang.Error) failure;");
-        line(source, "        }");
-        line(source, "        return new java.lang.IllegalStateException(");
-        line(source, "                \"Column copy failed\", failure);");
-        line(source, "    }");
-        line(source, "");
-        line(source, "    private static final class "
-                + columnCopyOperationTypeName
-                + " implements java.util.concurrent.Callable<"
-                + "java.lang.Void> {");
-        line(source, "        private final java.lang.Object source;");
-        line(source, "        private final java.lang.Object destination;");
-        line(source, "        private final int sourceFromIndex;");
-        line(source, "        private final int destinationOffset;");
-        line(source, "        private final int rowCount;");
-        line(source, "");
-        line(source, "        private " + columnCopyOperationTypeName + "(");
-        line(source, "                java.lang.Object source,");
-        line(source, "                java.lang.Object destination,");
-        line(source, "                int sourceFromIndex,");
-        line(source, "                int destinationOffset,");
-        line(source, "                int rowCount) {");
-        line(source, "            this.source = source;");
-        line(source, "            this.destination = destination;");
-        line(source, "            this.sourceFromIndex = sourceFromIndex;");
-        line(source, "            this.destinationOffset = destinationOffset;");
-        line(source, "            this.rowCount = rowCount;");
-        line(source, "        }");
-        line(source, "");
-        line(source, "        @java.lang.Override");
-        line(source, "        public java.lang.Void call() {");
-        line(source, "            java.lang.System.arraycopy(source, "
-                + "sourceFromIndex, destination, destinationOffset, "
-                + "rowCount);");
-        line(source, "            return null;");
-        line(source, "        }");
-        line(source, "    }");
-        line(source, "");
     }
 
     private static int batchHelperIndex(int chunkStart) {
@@ -2954,7 +2976,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         private final String implementationQualifiedName;
         private final String batchTypeName;
         private final String batchImplementationTypeName;
-        private final String columnCopyOperationTypeName;
         private final String provenanceTypeName;
 
         private SchemaModel(
@@ -2969,7 +2990,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 String implementationQualifiedName,
                 String batchTypeName,
                 String batchImplementationTypeName,
-                String columnCopyOperationTypeName,
                 String provenanceTypeName) {
             this.schema = schema;
             this.accessors = accessors;
@@ -2982,7 +3002,6 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             this.implementationQualifiedName = implementationQualifiedName;
             this.batchTypeName = batchTypeName;
             this.batchImplementationTypeName = batchImplementationTypeName;
-            this.columnCopyOperationTypeName = columnCopyOperationTypeName;
             this.provenanceTypeName = provenanceTypeName;
         }
     }

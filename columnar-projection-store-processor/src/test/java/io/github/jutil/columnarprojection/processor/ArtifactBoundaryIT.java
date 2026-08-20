@@ -598,21 +598,25 @@ final class ArtifactBoundaryIT {
         int sealedCheck = append.indexOf("if (sealed)");
         int overflowCheck = append.indexOf(
                 "rowCount > java.lang.Integer.MAX_VALUE - size");
+        int modeSelection = append.indexOf(
+                "selectMutationMode(MUTATION_MODE_ROW);");
         int destinationCalculation = append.indexOf(
                 "final int destinationOffset = size;");
         int requiredSizeCalculation = append.indexOf(
                 "final int requiredSize = destinationOffset + rowCount;");
         int capacityReservation = append.indexOf(
                 "ensureCapacity(requiredSize);");
-        int positiveBatchGuard = append.indexOf("if (rowCount != 0)");
+        int positiveCopyGuard = append.indexOf(
+                "if (rowCount != 0)", capacityReservation);
         int sizePublication = append.indexOf("size = requiredSize;");
         int consumedPublication = append.indexOf("consumed = true;");
         assertTrue(unconsumedCheck >= 0 && unconsumedCheck < sealedCheck,
                 append);
-        assertTrue(overflowCheck < destinationCalculation, append);
+        assertTrue(overflowCheck < modeSelection, append);
+        assertTrue(modeSelection < destinationCalculation, append);
         assertTrue(destinationCalculation < requiredSizeCalculation, append);
         assertTrue(requiredSizeCalculation < capacityReservation, append);
-        assertTrue(capacityReservation < positiveBatchGuard, append);
+        assertTrue(capacityReservation < positiveCopyGuard, append);
         assertEquals(1, countOccurrences(
                 append, "ensureCapacity(requiredSize);"), append);
         assertEquals(0, countOccurrences(
@@ -641,7 +645,7 @@ final class ArtifactBoundaryIT {
                     "clearSources" + helperIndex + "();");
             assertTrue(requiredCall > sealedCheck
                     && requiredCall < overflowCheck, append);
-            assertTrue(copyCall > positiveBatchGuard
+            assertTrue(copyCall > positiveCopyGuard
                     && copyCall < sizePublication, append);
             assertEquals(1, countOccurrences(
                     append,
@@ -676,13 +680,17 @@ final class ArtifactBoundaryIT {
 
         assertEquals(helperCount,
                 countOccurrences(append, "requireColumns"), append);
-        assertEquals(1, countOccurrences(
-                append, "copyColumnsConcurrently(executor, "), append);
+        assertEquals(0, countOccurrences(
+                generated, "copyColumnsConcurrently"), generated);
         assertEquals(helperCount,
                 countOccurrences(append, "clearSources"), append);
         assertEquals(columnCount, copyHelperArrayCopies, batch);
-        assertEquals(columnCount + 1, countOccurrences(
+        assertEquals(columnCount * 2, countOccurrences(
                 generated, "java.lang.System.arraycopy("), generated);
+        assertFalse(generated.contains("java.util.concurrent.Executor"),
+                generated);
+        assertFalse(generated.contains("java.util.concurrent.Future"),
+                generated);
     }
 
     private static void assertBatchImplementationHasNoBridgeMethods(

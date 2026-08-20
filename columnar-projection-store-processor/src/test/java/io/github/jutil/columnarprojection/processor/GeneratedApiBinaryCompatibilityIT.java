@@ -19,7 +19,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.Executor;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
@@ -105,8 +104,6 @@ final class GeneratedApiBinaryCompatibilityIT {
             assertLoadedFrom(currentApi.classes, contract);
             assertLoadedFrom(currentApi.classes, implementation);
             assertNotNull(contract.getMethod("create", int.class));
-            assertNotNull(contract.getMethod(
-                    "create", int.class, Executor.class));
             assertCommonRuntimeSurfaceUnchanged(loader);
         }
     }
