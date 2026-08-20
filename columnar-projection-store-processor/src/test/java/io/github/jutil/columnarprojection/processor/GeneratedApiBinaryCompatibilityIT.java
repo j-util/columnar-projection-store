@@ -51,7 +51,7 @@ final class GeneratedApiBinaryCompatibilityIT {
     Path temporaryDirectory;
 
     @Test
-    void precompiledV12ConsumerRunsAgainstNewGeneratedApi()
+    void v12ConsumerAndNonConflictingImplementationsRemainCompatible()
             throws Exception {
         Path coreJar = configuredJar("core.jar");
         Path processorJar = configuredJar("processor.jar");
@@ -73,12 +73,35 @@ final class GeneratedApiBinaryCompatibilityIT {
         assertTrue(legacyApi.succeeded,
                 diagnosticsText(legacyApi.diagnostics));
 
-        Compilation sourceCompatibleDecorator = compilePlain(
-                "source-compatible-decorator",
+        Compilation nonConflictingSourceDecorator = compilePlain(
+                "non-conflicting-source-decorator",
                 Arrays.asList(currentApi.classes, coreJar),
-                sourceCompatibleDecoratorSource());
-        assertTrue(sourceCompatibleDecorator.succeeded,
-                diagnosticsText(sourceCompatibleDecorator.diagnostics));
+                nonConflictingSourceDecoratorSource());
+        assertTrue(nonConflictingSourceDecorator.succeeded,
+                diagnosticsText(nonConflictingSourceDecorator.diagnostics));
+
+        Compilation legacyConflictingImplementation = compilePlain(
+                "legacy-conflicting-implementation",
+                Collections.singletonList(legacyApi.classes),
+                conflictingV12ImplementationSource());
+        assertTrue(legacyConflictingImplementation.succeeded,
+                diagnosticsText(
+                        legacyConflictingImplementation.diagnostics));
+
+        Compilation currentConflictingImplementation = compilePlain(
+                "current-conflicting-implementation",
+                Arrays.asList(currentApi.classes, coreJar),
+                conflictingV12ImplementationSource());
+        assertFalse(currentConflictingImplementation.succeeded,
+                "The incompatible return type must prevent recompilation");
+        String conflictDiagnostics = diagnosticsText(
+                currentConflictingImplementation.diagnostics);
+        assertTrue(conflictDiagnostics.contains("columnAppender()"),
+                conflictDiagnostics);
+        assertTrue(conflictDiagnostics.contains("return type"),
+                conflictDiagnostics);
+        assertTrue(conflictDiagnostics.contains("not compatible"),
+                conflictDiagnostics);
 
         Compilation precompiledImplementation = compilePlain(
                 "precompiled-implementation",
@@ -409,16 +432,16 @@ final class GeneratedApiBinaryCompatibilityIT {
                         + "}\n");
     }
 
-    private static StringSource sourceCompatibleDecoratorSource() {
+    private static StringSource nonConflictingSourceDecoratorSource() {
         return new StringSource(
-                PACKAGE_NAME + ".SourceCompatibleV12Decorator",
+                PACKAGE_NAME + ".NonConflictingV12Decorator",
                 "package " + PACKAGE_NAME + ";\n"
-                        + "public final class SourceCompatibleV12Decorator\n"
+                        + "public final class NonConflictingV12Decorator\n"
                         + "        implements "
                         + "BinaryCompatibilityProjectionStore {\n"
                         + "    private final "
                         + "BinaryCompatibilityProjectionStore delegate;\n"
-                        + "    public SourceCompatibleV12Decorator(\n"
+                        + "    public NonConflictingV12Decorator(\n"
                         + "            BinaryCompatibilityProjectionStore "
                         + "delegate) {\n"
                         + "        this.delegate = delegate;\n"
@@ -448,6 +471,29 @@ final class GeneratedApiBinaryCompatibilityIT {
                         + "BinaryCompatibilityProjectionStore {\n"
                         + "    public PrecompiledV12Implementation("
                         + "int expectedSize) { }\n"
+                        + "    public Batch batch() { return null; }\n"
+                        + "    public Batch batch(int from, int to) { "
+                        + "return null; }\n"
+                        + "    public void add(BinaryCompatibilityProjection "
+                        + "projection) { }\n"
+                        + "    public int size() { return 0; }\n"
+                        + "    public void seal() { }\n"
+                        + "    public io.github.jutil.columnarprojection."
+                        + "ProjectionCursor<BinaryCompatibilityProjection> "
+                        + "cursor() { return null; }\n"
+                        + "    public BinaryCompatibilityProjection "
+                        + "viewAt(int index) { return null; }\n"
+                        + "}\n");
+    }
+
+    private static StringSource conflictingV12ImplementationSource() {
+        return new StringSource(
+                PACKAGE_NAME + ".ConflictingV12Implementation",
+                "package " + PACKAGE_NAME + ";\n"
+                        + "public final class ConflictingV12Implementation\n"
+                        + "        implements "
+                        + "BinaryCompatibilityProjectionStore {\n"
+                        + "    public Object columnAppender() { return null; }\n"
                         + "    public Batch batch() { return null; }\n"
                         + "    public Batch batch(int from, int to) { "
                         + "return null; }\n"

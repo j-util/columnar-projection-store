@@ -260,12 +260,16 @@ columns may execute concurrently; calls to the same column require external
 single-writer serialization. No column call waits for another column.
 
 `columnAppender()` is a default method on the generated store contract. This
-lets an external implementation or decorator written against the generated
-1.2.0 contract continue to link and recompile without adding a method. Its
-inherited default throws `UnsupportedOperationException`; the official
-processor-generated implementation overrides it with the appender described
-above. The generated concrete store itself does not implement the appender
-interface or expose accessor-named filling methods.
+adds no new abstract implementation obligation. An ordinary implementation or
+decorator written against the generated 1.2.0 contract, with no conflicting
+zero-argument `columnAppender()` method, inherits a default that throws
+`UnsupportedOperationException`; the tested precompiled 1.2.0 implementation
+and consumer remain binary compatible. Source recompilation may require changes
+when an earlier type already declares `columnAppender()` with an incompatible
+return type, or inherits a conflicting default. The official
+processor-generated implementation overrides the fallback with the appender
+described above. The generated concrete store itself does not implement the
+appender interface or expose accessor-named filling methods.
 
 During per-column filling, `size()` remains zero. After the caller has joined
 all filling tasks, `seal()` compares every generated column count. A successful

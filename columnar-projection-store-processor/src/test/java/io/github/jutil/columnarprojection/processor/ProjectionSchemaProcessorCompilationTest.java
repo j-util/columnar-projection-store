@@ -1122,6 +1122,167 @@ final class ProjectionSchemaProcessorCompilationTest {
     }
 
     @Test
+    void publicNestedContractNamesAvoidTopLevelDollarBinaryNames()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "example.TradeStore$ColumnAppender",
+                        "package example;\n"
+                                + "public final class "
+                                + "TradeStore$ColumnAppender { }\n"),
+                new StringSource(
+                        "example.TradeStore$Batch",
+                        "package example;\n"
+                                + "public final class TradeStore$Batch { }\n"),
+                new StringSource(
+                        "example.Trade",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Trade { int value(); }\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSource(
+                compilation, "example.Trade");
+        String implementation = generatedSource(
+                compilation, "example.Trade");
+        assertTrue(contract.contains(
+                "default ColumnAppender_ columnAppender()"), contract);
+        assertTrue(contract.contains("interface ColumnAppender_"), contract);
+        assertTrue(contract.contains("Batch_ batch()"), contract);
+        assertTrue(contract.contains("interface Batch_"), contract);
+        assertTrue(contract.contains(
+                "return new Trade__ColumnarProjectionStore(expectedSize);"),
+                contract);
+        assertTrue(implementation.contains(
+                "public example.TradeStore.ColumnAppender_ "
+                        + "columnAppender()"), implementation);
+        assertTrue(implementation.contains(
+                "public example.TradeStore.Batch_ batch()"), implementation);
+        assertTrue(implementation.contains(
+                "implements example.TradeStore.ColumnAppender_"),
+                implementation);
+        assertTrue(implementation.contains(
+                "implements example.TradeStore.Batch_"), implementation);
+    }
+
+    @Test
+    void privateNestedImplementationNamesAvoidTopLevelDollarBinaryNames()
+            throws IOException {
+        Compilation compilation = compileWithProcessor(
+                new StringSource(
+                        "example.Trade__ColumnarProjectionStore$"
+                                + "ColumnAppenderImplementation",
+                        "package example;\n"
+                                + "public final class Trade__"
+                                + "ColumnarProjectionStore$"
+                                + "ColumnAppenderImplementation { }\n"),
+                new StringSource(
+                        "example.Trade__ColumnarProjectionStore$"
+                                + "BatchImplementation",
+                        "package example;\n"
+                                + "public final class Trade__"
+                                + "ColumnarProjectionStore$"
+                                + "BatchImplementation { }\n"),
+                new StringSource(
+                        "example.Trade__ColumnarProjectionStore$"
+                                + "GeneratedProvenance",
+                        "package example;\n"
+                                + "public final class Trade__"
+                                + "ColumnarProjectionStore$"
+                                + "GeneratedProvenance { }\n"),
+                new StringSource(
+                        "example.Trade",
+                        "package example;\n"
+                                + "import io.github.jutil.columnarprojection."
+                                + "ProjectionSchema;\n"
+                                + "@ProjectionSchema\n"
+                                + "public interface Trade { int value(); }\n"));
+
+        assertSucceeded(compilation);
+        String contract = generatedStoreSource(
+                compilation, "example.Trade");
+        String implementation = generatedSource(
+                compilation, "example.Trade");
+        assertTrue(contract.contains(
+                "@example.Trade__ColumnarProjectionStore."
+                        + "GeneratedProvenance_("), contract);
+        assertTrue(implementation.contains(
+                "@interface GeneratedProvenance_"), implementation);
+        assertTrue(implementation.contains(
+                "private final ColumnAppenderImplementation_ "
+                        + "columnAppender"), implementation);
+        assertTrue(implementation.contains(
+                "private final class ColumnAppenderImplementation_ "
+                        + "implements example.TradeStore.ColumnAppender"),
+                implementation);
+        assertTrue(implementation.contains(
+                "private final class BatchImplementation_ implements "
+                        + "example.TradeStore.Batch"), implementation);
+    }
+
+    @Test
+    void dollarCollisionNamesRemainStableAcrossIncrementalCompilation()
+            throws IOException {
+        String schema = "package example;\n"
+                + "import io.github.jutil.columnarprojection."
+                + "ProjectionSchema;\n"
+                + "@ProjectionSchema\n"
+                + "public interface Trade { int value(); }\n";
+        String publicCollision = "package example;\n"
+                + "public final class TradeStore$ColumnAppender { }\n";
+        String privateCollision = "package example;\n"
+                + "public final class Trade__ColumnarProjectionStore$"
+                + "ColumnAppenderImplementation { }\n";
+        Path compilationDirectory = temporaryDirectory.resolve(
+                "dollar-collision-recompilation");
+
+        Compilation first = compileWithProcessor(
+                compilationDirectory,
+                Collections.<Path>emptyList(),
+                new StringSource("example.Trade", schema),
+                new StringSource(
+                        "example.TradeStore$ColumnAppender",
+                        publicCollision),
+                new StringSource(
+                        "example.Trade__ColumnarProjectionStore$"
+                                + "ColumnAppenderImplementation",
+                        privateCollision));
+
+        assertSucceeded(first);
+        String firstContract = generatedStoreSource(first, "example.Trade");
+        String firstImplementation = generatedSource(first, "example.Trade");
+        assertTrue(firstContract.contains("interface ColumnAppender_"),
+                firstContract);
+        assertTrue(firstImplementation.contains(
+                "class ColumnAppenderImplementation_ implements"),
+                firstImplementation);
+
+        Compilation second = compileWithProcessor(
+                compilationDirectory,
+                Collections.singletonList(first.classOutput),
+                new StringSource("example.Trade", schema),
+                new StringSource(
+                        "example.TradeStore$ColumnAppender",
+                        publicCollision),
+                new StringSource(
+                        "example.Trade__ColumnarProjectionStore$"
+                                + "ColumnAppenderImplementation",
+                        privateCollision));
+
+        assertSucceeded(second);
+        assertEquals(firstContract, generatedStoreSource(
+                second, "example.Trade"));
+        assertEquals(firstImplementation, generatedSource(
+                second, "example.Trade"));
+        assertFalse(generatedStoreSource(second, "example.Trade").contains(
+                "interface ColumnAppender__"));
+        assertFalse(generatedSource(second, "example.Trade").contains(
+                "class ColumnAppenderImplementation__ implements"));
+    }
+
+    @Test
     void generatedStoreContractNameAvoidsRequiredSourceTypeRoots()
             throws IOException {
         Compilation compilation = compileWithProcessor(

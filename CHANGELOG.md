@@ -37,12 +37,16 @@ This file records user-visible changes to Columnar Projection Store.
   carried into 1.3.0. The published 1.2.0 API remains compatible: generated
   `create(int)`, the public generated constructor, `add`, both batch factories,
   batch append, `seal`, `cursor`, and `viewAt` are unchanged.
-- `columnAppender()` is a default generated-contract method so external 1.2.0
-  implementations and decorators continue to link and recompile. Its inherited
-  default reports unsupported operation; the official generated implementation
-  overrides it. The unreleased direct accessor-named store methods were removed
-  to avoid changing overload resolution for valid accessor names such as
-  `add()` and `equals()`.
+- `columnAppender()` is a default generated-contract method, so it adds no new
+  abstract implementation obligation. Ordinary 1.2.0 implementations and
+  decorators without a conflicting zero-argument `columnAppender()` inherit
+  the unsupported fallback, and the tested precompiled 1.2.0 scenario remains
+  binary compatible. Source recompilation may require changes when an earlier
+  type already declares that method with an incompatible return type or
+  inherits a conflicting default. The official generated implementation
+  overrides the fallback. The unreleased direct accessor-named store methods
+  were removed to avoid changing overload resolution for valid accessor names
+  such as `add()` and `equals()`.
 
 ## 1.2.0 - 2026-08-10
 

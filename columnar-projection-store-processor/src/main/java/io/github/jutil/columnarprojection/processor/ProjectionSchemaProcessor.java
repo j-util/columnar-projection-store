@@ -1116,12 +1116,28 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
                 storeQualifiedName,
                 implementationSimpleName,
                 implementationQualifiedName,
-                nestedTypeName("ColumnAppender", schema, accessors),
                 nestedTypeName(
-                        "ColumnAppenderImplementation", schema, accessors),
-                batchTypeName(schema, accessors),
-                nestedTypeName("BatchImplementation", schema, accessors),
-                nestedTypeName("GeneratedProvenance", schema, accessors));
+                        "ColumnAppender",
+                        storeQualifiedName,
+                        schema,
+                        accessors),
+                nestedTypeName(
+                        "ColumnAppenderImplementation",
+                        implementationQualifiedName,
+                        schema,
+                        accessors),
+                nestedTypeName(
+                        "Batch", storeQualifiedName, schema, accessors),
+                nestedTypeName(
+                        "BatchImplementation",
+                        implementationQualifiedName,
+                        schema,
+                        accessors),
+                nestedTypeName(
+                        "GeneratedProvenance",
+                        implementationQualifiedName,
+                        schema,
+                        accessors));
     }
 
     private boolean generatedStoreNameCollides(
@@ -1475,10 +1491,13 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         line(source, "     *");
         line(source, "     * <p>The processor-generated implementation "
                 + "overrides this method and returns the same store-owned "
-                + "appender on every call. This default preserves source and "
-                + "binary compatibility for implementations of an earlier "
-                + "generated contract; such implementations report that "
-                + "per-column filling is unsupported.");
+                + "appender on every call. This default adds no new abstract "
+                + "implementation obligation. An earlier implementation "
+                + "without a conflicting zero-argument {@code "
+                + "columnAppender()} inherits the unsupported fallback. "
+                + "Source recompilation can require changes when an existing "
+                + "method has the same parameters and an incompatible return "
+                + "type, or when an inherited default conflicts.");
         line(source, "     *");
         line(source, "     * @return this store's typed column appender");
         line(source, "     * @throws java.lang.UnsupportedOperationException "
@@ -2751,23 +2770,32 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
         }
     }
 
-    private String batchTypeName(
-            TypeElement schema, List<Accessor> accessors) {
-        return nestedTypeName("Batch", schema, accessors);
-    }
-
     private String nestedTypeName(
             String baseName,
+            String ownerBinaryName,
             TypeElement schema,
             List<Accessor> accessors) {
         Set<String> unavailableNames =
                 sourceTypeLeadingIdentifiers(schema, accessors);
 
         String name = baseName;
-        while (unavailableNames.contains(name)) {
+        while (unavailableNames.contains(name)
+                || topLevelTypeOccupiesNestedBinaryName(
+                        ownerBinaryName, name)) {
             name += "_";
         }
         return name;
+    }
+
+    private boolean topLevelTypeOccupiesNestedBinaryName(
+            String ownerBinaryName, String nestedSimpleName) {
+        String nestedBinaryName = ownerBinaryName + "$" + nestedSimpleName;
+        TypeElement existingType = declaredTypes.get(nestedBinaryName);
+        if (existingType == null) {
+            existingType = typeByBinaryName(nestedBinaryName);
+        }
+        return existingType != null
+                && existingType.getNestingKind() == NestingKind.TOP_LEVEL;
     }
 
     private Set<String> sourceTypeLeadingIdentifiers(
