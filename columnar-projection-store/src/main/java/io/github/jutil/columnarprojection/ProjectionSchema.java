@@ -14,6 +14,10 @@ import java.lang.annotation.Target;
  * reference return types are permitted. Reference values, including
  * {@code null}, are stored as opaque references and are not recursively
  * flattened.
+ * The generated schema-specific store declares a nested typed column appender
+ * with synchronous whole-array and half-open-range filling methods using each
+ * accessor's exact name and a source array corresponding to its resolved return
+ * type.
  *
  * <p>Default methods define behavior and are not columns. Projection accessors
  * must not declare checked exceptions. A schema must be a non-private,

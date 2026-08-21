@@ -10,7 +10,6 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
-import java.util.concurrent.Executor;
 import org.junit.jupiter.api.Test;
 
 class GeneratedStoreContractRuntimeTest {
@@ -64,14 +63,30 @@ class GeneratedStoreContractRuntimeTest {
         Method commonFactory = ProjectionStores.class.getMethod(
                 "create", Class.class, Integer.TYPE);
         assertSame(ProjectionStore.class, commonFactory.getReturnType());
-        Method concurrentFactory = PriceProjectionStore.class.getMethod(
-                "create", Integer.TYPE, Executor.class);
-        assertTrue(Modifier.isStatic(concurrentFactory.getModifiers()));
-        assertSame(PriceProjectionStore.class,
-                concurrentFactory.getReturnType());
         assertSame(PriceProjectionStore.class,
                 PriceProjectionStore.class.getMethod(
                         "create", Integer.TYPE).getReturnType());
+        Method columnAppender = PriceProjectionStore.class.getMethod(
+                "columnAppender");
+        assertTrue(columnAppender.isDefault());
+        assertSame(PriceProjectionStore.ColumnAppender.class,
+                columnAppender.getReturnType());
+        assertSame(Void.TYPE, PriceProjectionStore.ColumnAppender.class.getMethod(
+                "price", double[].class).getReturnType());
+        assertSame(Void.TYPE, PriceProjectionStore.ColumnAppender.class.getMethod(
+                "price", double[].class, Integer.TYPE, Integer.TYPE)
+                .getReturnType());
+        assertSame(Void.TYPE, PriceProjectionStore.ColumnAppender.class.getMethod(
+                "symbol", String[].class).getReturnType());
+        assertSame(Void.TYPE, PriceProjectionStore.ColumnAppender.class.getMethod(
+                "symbol", String[].class, Integer.TYPE, Integer.TYPE)
+                .getReturnType());
+        assertThrows(NoSuchMethodException.class,
+                () -> PriceProjectionStore.class.getMethod(
+                        "price", double[].class));
+        assertThrows(NoSuchMethodException.class,
+                () -> direct.getClass().getMethod("price", double[].class));
+        assertSame(direct.columnAppender(), direct.columnAppender());
 
         Constructor<PriceProjection__ColumnarProjectionStore>
                 compatibleConstructor =
@@ -79,21 +94,6 @@ class GeneratedStoreContractRuntimeTest {
                                 .getConstructor(Integer.TYPE);
         assertTrue(Modifier.isPublic(
                 compatibleConstructor.getModifiers()));
-        Constructor<PriceProjection__ColumnarProjectionStore>
-                concurrentConstructor =
-                        PriceProjection__ColumnarProjectionStore.class
-                                .getDeclaredConstructor(
-                                        Integer.TYPE, Executor.class);
-        assertFalse(Modifier.isPublic(
-                concurrentConstructor.getModifiers()));
-        assertFalse(Modifier.isProtected(
-                concurrentConstructor.getModifiers()));
-        assertFalse(Modifier.isPrivate(
-                concurrentConstructor.getModifiers()));
-
-        assertThrows(NoSuchMethodException.class,
-                () -> PriceProjectionStore.Batch.class.getMethod(
-                        "append", Executor.class));
         assertThrows(IllegalArgumentException.class,
                 () -> PriceProjectionStore.create(-1));
     }
@@ -104,9 +104,14 @@ class GeneratedStoreContractRuntimeTest {
         Class<?> concrete = PriceProjection__ColumnarProjectionStore.class;
         Class<?> storeContract = PriceProjectionStore.class;
         Class<?> batchContract = PriceProjectionStore.Batch.class;
+        Class<?> columnAppenderContract =
+                PriceProjectionStore.ColumnAppender.class;
 
         assertTrue(storeContract.isAssignableFrom(concrete));
         assertTrue(ProjectionStore.class.isAssignableFrom(concrete));
+        assertFalse(columnAppenderContract.isAssignableFrom(concrete));
+        assertSame(columnAppenderContract,
+                concrete.getMethod("columnAppender").getReturnType());
         assertSame(batchContract,
                 concrete.getMethod("batch").getReturnType());
         assertSame(batchContract,
@@ -114,15 +119,19 @@ class GeneratedStoreContractRuntimeTest {
                         "batch", Integer.TYPE, Integer.TYPE).getReturnType());
 
         Class<?> batchImplementation = null;
+        Class<?> columnAppenderImplementation = null;
         Class<?> generationProvenance = null;
         for (Class<?> nested : concrete.getDeclaredClasses()) {
             if (batchContract.isAssignableFrom(nested)) {
                 batchImplementation = nested;
+            } else if (columnAppenderContract.isAssignableFrom(nested)) {
+                columnAppenderImplementation = nested;
             } else if (nested.isAnnotation()) {
                 generationProvenance = nested;
             }
         }
         assertTrue(batchImplementation != null);
+        assertTrue(columnAppenderImplementation != null);
         assertTrue(generationProvenance != null);
         assertTrue(Modifier.isPrivate(batchImplementation.getModifiers()));
         assertFalse(Modifier.isPublic(generationProvenance.getModifiers()));
@@ -130,6 +139,11 @@ class GeneratedStoreContractRuntimeTest {
                 generationProvenance.getModifiers()));
         assertEquals(1, batchImplementation.getInterfaces().length);
         assertSame(batchContract, batchImplementation.getInterfaces()[0]);
+        assertTrue(Modifier.isPrivate(
+                columnAppenderImplementation.getModifiers()));
+        assertEquals(1, columnAppenderImplementation.getInterfaces().length);
+        assertSame(columnAppenderContract,
+                columnAppenderImplementation.getInterfaces()[0]);
         for (Method method : batchImplementation.getDeclaredMethods()) {
             assertFalse(method.isBridge(), method.toString());
         }

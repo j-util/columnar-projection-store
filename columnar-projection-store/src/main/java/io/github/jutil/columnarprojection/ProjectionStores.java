@@ -16,7 +16,7 @@ import java.util.Objects;
  * or required-source-name conflicts may add trailing underscores. The
  * contract's static {@code create(int)} method directly constructs its
  * compile-time-known implementation and is the recommended entry point for
- * typed batching.
+ * typed batching and a typed column appender.
  *
  * <p>This factory instead performs runtime reflective discovery and returns the
  * common {@link ProjectionStore} contract for schema-agnostic and row-oriented
@@ -24,10 +24,10 @@ import java.util.Objects;
  * package or open it to {@code columnar.projection.store}. This reflective
  * access requirement does not apply to the generated schema-specific factory.
  * This factory's declared return type cannot expose generated schema-specific
- * batch setters; local-variable type inference ({@code var}) uses that declared
- * return type as well. Direct construction through a generated concrete store's
- * public constructor remains supported. All other generated implementation
- * details are unsupported.
+ * batch setters or the column appender; local-variable type inference
+ * ({@code var}) uses that declared return type as well. Direct construction
+ * through a generated concrete store's public constructor remains supported.
+ * All other generated implementation details are unsupported.
  */
 public final class ProjectionStores {
 
@@ -45,10 +45,11 @@ public final class ProjectionStores {
      * discovers and invokes the generated implementation reflectively. In a
      * named module, the schema package must either be exported or opened to
      * {@code columnar.projection.store}. The returned static type is the common
-     * row-oriented contract and does not declare schema-specific batch methods.
-     * Use {@code create(int)} on the generated schema-specific store contract
-     * when typed column setters or encapsulated module access are required; that
-     * method directly constructs its compile-time-known implementation.
+     * row-oriented contract and does not declare schema-specific batch methods
+     * or the column appender. Use {@code create(int)} on the generated
+     * schema-specific store contract when those typed operations or encapsulated
+     * module access are required; that method directly constructs its
+     * compile-time-known implementation.
      *
      * @param projectionType the projection schema interface
      * @param expectedSize the expected number of rows, or zero when unknown

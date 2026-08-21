@@ -569,7 +569,8 @@ class BatchAppendRuntimeTest {
             throws Exception {
         int columnCount = 0;
         for (Field field : store.getClass().getDeclaredFields()) {
-            if (!field.getName().startsWith("column")) {
+            if (!field.getName().startsWith("column")
+                    || !field.getType().isArray()) {
                 continue;
             }
             field.setAccessible(true);

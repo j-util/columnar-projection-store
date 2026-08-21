@@ -6,18 +6,47 @@ This file records user-visible changes to Columnar Projection Store.
 
 ### Added
 
-- Generated schema-specific store interfaces now provide an additive
-  `create(int, Executor)` factory. A positive batch appended to one of these
-  stores dispatches one copy operation per column to the caller-owned executor
-  and waits for every accepted operation before `append()` completes. The
-  existing `create(int)`, generated constructors, and sequential batch behavior
-  remain compatible.
-- Executor-backed append is synchronous and failure-atomic for logical rows.
-  Rejected submissions and copy failures wait uninterruptibly for accepted
-  tasks, clear attempted reference destinations, preserve interruption, and
-  leave the batch retryable. The store never shuts down its borrowed executor,
-  and callers must avoid executor starvation by ensuring queued copy tasks can
-  run while `append()` waits.
+- Generated schema-specific store interfaces now expose a nested typed
+  column-appender contract through `columnAppender()`. Its whole-array and
+  half-open-range methods use each projection accessor's exact name and source
+  array type. Each call synchronously appends only its own column, copies before
+  returning, and retains no source-array reference.
+- The official generated store returns one store-owned appender and keeps
+  accessor-named filling methods off the store itself. Distinct appender column
+  methods may run concurrently. Each column has an independent append count and
+  grows only its own backing array; calls to the same column remain externally
+  single-writer.
+- Column-appender contract and implementation names use the processor's
+  deterministic collision-safe nested-type naming rule.
+- Column filling keeps the logical size at zero until sealing. `seal()` checks
+  all generated column counts in O(number of columns), publishes the common
+  count on success, and reports useful column/count information on mismatch.
+  Unequal-count failures preserve the unsealed store and all copied values so
+  lagging columns can be filled before retrying.
+- Per-column filling preserves null reference elements, counts all-null arrays
+  by their full length, accepts empty no-ops, validates ranges and overflow
+  before mutation, and supports primitive, reference, generic, inherited,
+  covariant, boxed, and array-valued accessor types.
+
+### Changed
+
+- Positive row/batch mutation and positive per-column mutation now select
+  mutually exclusive building modes. Empty no-ops and validation failures do
+  not select a mode; `add` and typed batch append remain mixable with each other.
+- The unreleased concurrent batch-copy experiment was replaced rather than
+  carried into 1.3.0. The published 1.2.0 API remains compatible: generated
+  `create(int)`, the public generated constructor, `add`, both batch factories,
+  batch append, `seal`, `cursor`, and `viewAt` are unchanged.
+- `columnAppender()` is a default generated-contract method, so it adds no new
+  abstract implementation obligation. Ordinary 1.2.0 implementations and
+  decorators without a conflicting zero-argument `columnAppender()` inherit
+  the unsupported fallback, and the tested precompiled 1.2.0 scenario remains
+  binary compatible. Source recompilation may require changes when an earlier
+  type already declares that method with an incompatible return type or
+  inherits a conflicting default. The official generated implementation
+  overrides the fallback. The unreleased direct accessor-named store methods
+  were removed to avoid changing overload resolution for valid accessor names
+  such as `add()` and `equals()`.
 
 ## 1.2.0 - 2026-08-10
 
@@ -125,7 +154,7 @@ This file records user-visible changes to Columnar Projection Store.
   stale output and requests a clean rebuild when that output cannot be removed
   safely.
 - Generated store interfaces now document construction, both typed batch modes,
-  column setters, source-range validation, empty behavior, ownership,
+  batch column setters, source-range validation, empty behavior, ownership,
   lifecycle, ordering, and complexity semantics.
 - Generated concrete stores implement their schema-specific store interfaces;
   their public constructors and common `ProjectionStore` behavior remain
