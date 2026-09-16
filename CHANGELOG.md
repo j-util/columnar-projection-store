@@ -30,6 +30,9 @@ This file records user-visible changes to Columnar Projection Store.
 
 ### Changed
 
+- Clarify that empty appender calls remain no-ops after row-mode selection,
+  while every appender call is rejected after sealing. Extend regression and
+  published-1.2.0 compatibility verification without changing runtime behavior.
 - Positive row/batch mutation and positive per-column mutation now select
   mutually exclusive building modes. Empty no-ops and validation failures do
   not select a mode; `add` and typed batch append remain mixable with each other.

@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.TimeUnit;
 import javax.tools.Diagnostic;
 import javax.tools.DiagnosticCollector;
 import javax.tools.JavaCompiler;
@@ -57,11 +58,16 @@ final class GeneratedApiBinaryCompatibilityIT {
         Path processorJar = configuredJar("processor.jar");
 
         Compilation currentApi = compileGeneratedApi(
-                coreJar, processorJar);
+                "current-generated-api", coreJar, processorJar);
         assertTrue(currentApi.succeeded,
                 diagnosticsText(currentApi.diagnostics));
 
-        Compilation legacyApi = compilePlain(
+        String baselineCore = System.getProperty("compatibility.baseline.core");
+        String baselineProcessor = System.getProperty(
+                "compatibility.baseline.processor");
+        assertEquals(baselineCore == null, baselineProcessor == null,
+                "Configure both published baseline JARs or neither");
+        Compilation legacyApi = baselineCore == null ? compilePlain(
                 "legacy-api",
                 Collections.singletonList(Files.createDirectories(
                         temporaryDirectory.resolve("empty-classpath"))),
@@ -69,9 +75,16 @@ final class GeneratedApiBinaryCompatibilityIT {
                 legacyProjectionStoreSource(),
                 legacyProjectionSource(),
                 legacyGeneratedContractSource(),
-                legacyGeneratedImplementationSource());
+                legacyGeneratedImplementationSource()) : compilePublishedApi(
+                        configuredJar("compatibility.baseline.core"),
+                        configuredJar("compatibility.baseline.processor"));
         assertTrue(legacyApi.succeeded,
                 diagnosticsText(legacyApi.diagnostics));
+        List<Path> legacyClassPath = new ArrayList<Path>();
+        legacyClassPath.add(legacyApi.classes);
+        if (baselineCore != null) {
+            legacyClassPath.add(configuredJar("compatibility.baseline.core"));
+        }
 
         Compilation nonConflictingSourceDecorator = compilePlain(
                 "non-conflicting-source-decorator",
@@ -82,7 +95,7 @@ final class GeneratedApiBinaryCompatibilityIT {
 
         Compilation legacyConflictingImplementation = compilePlain(
                 "legacy-conflicting-implementation",
-                Collections.singletonList(legacyApi.classes),
+                legacyClassPath,
                 conflictingV12ImplementationSource());
         assertTrue(legacyConflictingImplementation.succeeded,
                 diagnosticsText(
@@ -105,17 +118,36 @@ final class GeneratedApiBinaryCompatibilityIT {
 
         Compilation precompiledImplementation = compilePlain(
                 "precompiled-implementation",
-                Collections.singletonList(legacyApi.classes),
+                legacyClassPath,
                 precompiledImplementationSource());
         assertTrue(precompiledImplementation.succeeded,
                 diagnosticsText(precompiledImplementation.diagnostics));
 
         Compilation precompiledConsumer = compilePlain(
                 "precompiled-consumer",
-                Collections.singletonList(legacyApi.classes),
+                legacyClassPath,
                 precompiledConsumerSource());
         assertTrue(precompiledConsumer.succeeded,
                 diagnosticsText(precompiledConsumer.diagnostics));
+        Compilation recompiledConsumer = compilePlain(
+                "recompiled-consumer",
+                Arrays.asList(currentApi.classes, coreJar),
+                precompiledConsumerSource());
+        assertTrue(recompiledConsumer.succeeded,
+                diagnosticsText(recompiledConsumer.diagnostics));
+
+        if (baselineCore != null) {
+            URL[] baselineClassPath = new URL[] {
+                precompiledConsumer.classes.toUri().toURL(),
+                legacyApi.classes.toUri().toURL(),
+                configuredJar("compatibility.baseline.core").toUri().toURL()
+            };
+            try (URLClassLoader loader = new URLClassLoader(baselineClassPath, null)) {
+                Class<?> consumer = Class.forName(CONSUMER_NAME, true, loader);
+                assertEquals("binary-compatible-ok",
+                        invokeStatic(consumer.getMethod("run")));
+            }
+        }
 
         Path consumerClass = precompiledConsumer.classes.resolve(
                 "compatibility/v12/PrecompiledV12Consumer.class");
@@ -169,9 +201,9 @@ final class GeneratedApiBinaryCompatibilityIT {
     }
 
     private Compilation compileGeneratedApi(
-            Path coreJar, Path processorJar) throws Exception {
+            String directoryName, Path coreJar, Path processorJar) throws Exception {
         Path directory = Files.createDirectories(
-                temporaryDirectory.resolve("current-generated-api"));
+                temporaryDirectory.resolve(directoryName));
         Path classes = Files.createDirectories(directory.resolve("classes"));
         Path generatedSources = Files.createDirectories(
                 directory.resolve("generated-sources"));
@@ -188,6 +220,41 @@ final class GeneratedApiBinaryCompatibilityIT {
                 classes,
                 options,
                 Collections.singletonList(currentProjectionSource()));
+    }
+
+    private Compilation compilePublishedApi(Path coreJar, Path processorJar)
+            throws Exception {
+        // A separate compiler process prevents the test JVM's current processor
+        // from shadowing the published processor through parent-first loading.
+        Path directory = Files.createDirectories(
+                temporaryDirectory.resolve("published-generated-api"));
+        Path classes = Files.createDirectories(directory.resolve("classes"));
+        Path source = directory.resolve("BinaryCompatibilityProjection.java");
+        Files.write(source, currentProjectionSource().source
+                .getBytes(StandardCharsets.UTF_8));
+        Path javaHome = Paths.get(System.getProperty("java.home"));
+        Path javac = javaHome.resolve("bin/javac");
+        if (!Files.isRegularFile(javac)) {
+            javac = javaHome.getParent().resolve("bin/javac");
+        }
+        Path log = directory.resolve("javac.log");
+        Process process = new ProcessBuilder(
+                javac.toString(), "-classpath", coreJar.toString(),
+                "-processorpath", processorJar.toString(),
+                "-processor", PROCESSOR_CLASS,
+                "-source", "8", "-target", "8", "-Xlint:-options",
+                "-d", classes.toString(), source.toString())
+                .redirectErrorStream(true).redirectOutput(log.toFile()).start();
+        try {
+            assertTrue(process.waitFor(60, TimeUnit.SECONDS),
+                    "Published processor compilation timed out");
+            assertEquals(0, process.exitValue(),
+                    new String(Files.readAllBytes(log), StandardCharsets.UTF_8));
+        } finally {
+            process.destroy();
+        }
+        return new Compilation(true, classes,
+                Collections.<Diagnostic<? extends JavaFileObject>>emptyList());
     }
 
     private Compilation compilePlain(

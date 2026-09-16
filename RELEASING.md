@@ -4,6 +4,34 @@ Columnar Projection Store releases the core and annotation-processor artifacts
 together from the same commit. Choose a release version `<version>` and use the
 annotated tag `v<version>`.
 
+For a pre-release compatibility evaluation, keep the snapshot version and do
+not run the tagging or publishing steps below. Download both published 1.2.0
+JARs from Maven Central into a temporary directory and run:
+
+```shell
+./mvnw clean verify \
+  -Dcompatibility.baseline.core=/absolute/path/columnar-projection-store-1.2.0.jar \
+  -Dcompatibility.baseline.processor=/absolute/path/columnar-projection-store-processor-1.2.0.jar
+```
+
+The generated compatibility fixture then invokes the published processor in a
+separate `javac` process, compiles a consumer against that generated API, runs
+it on both versions, recompiles it against the candidate, and checks the
+default unsupported appender on a precompiled external implementation. Without
+the two properties, the normal build uses its self-contained legacy API fixture.
+Both properties must be supplied together. Run the published-artifact check on
+Java 8 and the current CI JDK. Also compare the runtime and processor JARs with
+an API comparison tool and compile a clean consumer outside the reactor.
+
+For per-column performance evidence, use the separate
+[`HardwoodDestinationMaterializationBenchmark`](https://github.com/j-util/performance-lab#hardwooddestinationmaterializationbenchmark)
+in `performance-lab`. Keep Parquet decoding outside the measured operation,
+include typed batches, synchronous and fixed-pool appenders, and an exact-capacity
+`ArrayList`, and repeat the large workload with time and allocation profiling.
+Record the environment, commands, exact source commits and per-fork variation.
+Small workloads need not win; an unstable or unfavorable large-workload result
+blocks a performance-based release verdict.
+
 1. Confirm that the worktree contains only the intended release changes and
    that neither release coordinate at `<version>` already exists on Maven
    Central.

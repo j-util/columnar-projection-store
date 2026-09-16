@@ -1546,8 +1546,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "         * @throws java.lang.NullPointerException if "
                     + "{@code source} is null");
             line(source, "         * @throws java.lang.IllegalStateException if "
-                    + "this store has been sealed, row or batch mutation has "
-                    + "started, or the maximum column size would be exceeded");
+                    + "this store has been sealed, a non-empty append conflicts "
+                    + "with row or batch mutation, or the maximum column size "
+                    + "would be exceeded");
             line(source, "         */");
             line(source, "        void " + accessor.name + "(" + sourceType
                     + " source);");
@@ -1579,8 +1580,9 @@ public final class ProjectionSchemaProcessor extends AbstractProcessor {
             line(source, "         * @throws java.lang.IndexOutOfBoundsException "
                     + "if the range is outside {@code source}");
             line(source, "         * @throws java.lang.IllegalStateException if "
-                    + "this store has been sealed, row or batch mutation has "
-                    + "started, or the maximum column size would be exceeded");
+                    + "this store has been sealed, a non-empty append conflicts "
+                    + "with row or batch mutation, or the maximum column size "
+                    + "would be exceeded");
             line(source, "         */");
             line(source, "        void " + accessor.name + "(" + sourceType
                     + " source, int sourceFromIndex, int sourceToIndex);");

@@ -308,6 +308,66 @@ class PerColumnFillRuntimeTest {
     }
 
     @Test
+    void emptyBoundaryRangesDoNotSelectModeOrInventRows() {
+        BatchProjectionStore store = BatchProjectionStore.create(1);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
+        columns.quantity(new int[] {99}, 1, 1);
+        columns.symbol(new String[] {"ignored"}, 1, 1);
+        columns.payload(new byte[][] {new byte[] {99}}, 1, 1);
+        assertEquals(0, store.size());
+        byte[] payload = new byte[] {1};
+        store.add(row(1, "A", payload));
+        store.seal();
+        store.seal();
+        assertEquals(1, store.size());
+        assertRow(store.viewAt(0), 1, "A", payload);
+
+        BatchProjectionStore empty = BatchProjectionStore.create(1);
+        empty.columnAppender().quantity(new int[] {99}, 1, 1);
+        empty.seal();
+        assertEquals(0, empty.size());
+        assertFalse(empty.cursor().moveNext());
+    }
+
+    @Test
+    void invalidCallsAfterPartialFillingPreserveCopiedValuesAndCounts() {
+        BatchProjectionStore store = BatchProjectionStore.create(1);
+        BatchProjectionStore.ColumnAppender columns = store.columnAppender();
+        int[] quantities = new int[] {-1, 7, -1};
+        String[] symbols = new String[] {"ignored", "A", "ignored"};
+        byte[] payload = new byte[] {7};
+        byte[][] payloads = new byte[][] {null, payload, null};
+        columns.quantity(quantities, 1, 2);
+        columns.symbol(symbols, 1, 2);
+        columns.payload(payloads, 1, 2);
+        quantities[1] = 99;
+        symbols[1] = "changed";
+        payloads[1] = null;
+
+        assertThrows(NullPointerException.class,
+                () -> columns.symbol(null, 0, 0));
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> columns.quantity(quantities, 2, 1));
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> columns.symbol(symbols, 0, 4));
+        assertThrows(IndexOutOfBoundsException.class,
+                () -> columns.payload(payloads, -1, 1));
+        columns.quantity(quantities, 3, 3);
+        columns.symbol(symbols, 3, 3);
+        columns.payload(payloads, 3, 3);
+        assertEquals(0, store.size());
+        assertThrows(IllegalStateException.class, () -> store.viewAt(0));
+        store.seal();
+        store.seal();
+        assertEquals(1, store.size());
+        assertRow(store.viewAt(0), 7, "A", payload);
+        assertSame(columns, store.columnAppender());
+        assertThrows(IllegalStateException.class,
+                () -> columns.symbol(symbols, 3, 3));
+        assertEquals(1, store.size());
+    }
+
+    @Test
     void perColumnGrowthNeverGrowsAnotherColumn() throws Exception {
         BatchProjectionStore store = BatchProjectionStore.create(0);
         BatchProjectionStore.ColumnAppender columns = store.columnAppender();
