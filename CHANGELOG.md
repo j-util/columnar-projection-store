@@ -2,7 +2,7 @@
 
 This file records user-visible changes to Columnar Projection Store.
 
-## 1.3.0 - Unreleased
+## 1.3.0 - 2026-09-16
 
 ### Added
 

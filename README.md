@@ -20,14 +20,10 @@ are unsupported. The library has no runtime dependencies and targets Java 8.
 
 ## Status and installation
 
-Version `1.2.0` is the latest release and provides the generated, type-safe
-batch API for appending column arrays while preserving the row-oriented API and
-storage semantics introduced in `1.0.0`. Development version
-`1.3.0-SNAPSHOT` adds generated synchronous methods for progressively filling
-individual columns; distinct columns may be filled concurrently.
-The installation example below therefore keeps the published `1.2.0`
-coordinate; per-column filling is development API until a `1.3.0` release is
-available.
+Version `1.3.0` adds generated synchronous methods for progressively filling
+individual columns; distinct columns may be filled concurrently. It preserves
+the generated, type-safe batch API introduced in `1.2.0` and the row-oriented
+API and storage semantics introduced in `1.0.0`.
 Maven Central listings:
 [runtime API](https://central.sonatype.com/artifact/io.github.j-util/columnar-projection-store)
 and
@@ -48,7 +44,7 @@ processor execution explicit:
 ```xml
 <properties>
     <maven.compiler.release>8</maven.compiler.release>
-    <columnar-projection-store.version>1.2.0</columnar-projection-store.version>
+    <columnar-projection-store.version>1.3.0</columnar-projection-store.version>
 </properties>
 
 <dependencies>
@@ -219,6 +215,11 @@ prices.batch()
 ```
 
 ### Per-column filling
+
+Per-column filling supports pipelines that produce columns independently; it
+is not universally faster than typed batches. Relative performance depends on
+the workload, chunk sizes, capacity, and caller-managed concurrency. Measure
+both approaches with representative data before choosing for performance.
 
 For pipelines that already produce columns independently, the generated store
 also declares a nested typed appender. It has two synchronous methods with each
